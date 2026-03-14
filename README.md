@@ -2,8 +2,6 @@
 
 A high-security, local-first password manager built with Python. This application allows users to securely store, generate, and manage their credentials using industry-standard AES-256 encryption.
 
-Developed by: **YOUR NAME HERE**
-
 ---
 
 ## ✨ Features

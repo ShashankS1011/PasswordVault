@@ -23,9 +23,3 @@ If you have the `.exe` file:
 2. On the first run, enter your name to personalize your vault.
 3. Set a **Master Password**. *Note: Do not forget this! It is the only way to decrypt your data.*
 4. Use the menu options (1-4) to manage your passwords.
-
-### For Developers (Running from Source)
-1. **Clone the repository:**
-   ```bash
-   git clone [https://github.com/YOUR_USERNAME/password-vault.git](https://github.com/YOUR_USERNAME/password-vault.git)
-   cd password-vault

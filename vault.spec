@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['vault.py'],
+    ['d:\\Documents\\PasswordVault\\vault.py'],
     pathex=[],
     binaries=[],
     datas=[],

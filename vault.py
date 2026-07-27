@@ -93,7 +93,7 @@ def build_exe():
   cmd = [sys.executable, "-m", "PyInstaller", "--onefile", script_path]
 
   # Check for optional app.ico file
-  icon_path = os.path.join(os.path.dirname(script_path), "app.ico")
+  icon_path = os.path.join(os.path.dirname(script_path), "D:/Documents/PasswordVault/app.ico")
   if os.path.exists(icon_path):
     print(f"{GREEN}[INFO] Custom icon 'app.ico' found! Applying to build...{RESET}")
     cmd.extend(["--icon", icon_path])

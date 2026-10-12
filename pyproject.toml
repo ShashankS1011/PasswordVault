@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secure-password-vault"
+version = "3.3.1"
+description = "A local-first encrypted password vault"
+requires-python = ">=3.10"
+dependencies = [
+  "cryptography>=42,<51",
+  "pyperclip>=1.8,<2",
+]
+
+[project.scripts]
+vault = "vault:main"
+
+[project.optional-dependencies]
+dev = [
+  "pyinstaller>=6,<7",
+  "pytest>=8,<9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.setuptools]
+py-modules = ["vault"]

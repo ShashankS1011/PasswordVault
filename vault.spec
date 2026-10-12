@@ -1,9 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(SPECPATH)
+ICON_PATH = str(PROJECT_ROOT / "app.ico") if (PROJECT_ROOT / "app.ico").is_file() else None
 
 a = Analysis(
-    ['d:\\Documents\\PasswordVault\\vault.py'],
-    pathex=[],
+    [str(PROJECT_ROOT / 'vault.py')],
+    pathex=[str(PROJECT_ROOT)],
     binaries=[],
     datas=[],
     hiddenimports=[],
@@ -26,7 +31,8 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # Keep UPX disabled for reproducible builds and fewer antivirus false positives.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
@@ -35,5 +41,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['D:\\Documents\\PasswordVault\\app.ico'],
+    icon=ICON_PATH,
 )

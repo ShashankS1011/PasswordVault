@@ -431,15 +431,15 @@ python -m PyInstaller --noconfirm --clean vault.spec
 
 ```text
 .
-├── vault.py              # CLI application
-├── vault.bat             # Windows launcher
-├── vault.spec            # PyInstaller configuration
-├── build_exe.bat         # Windows build helper
-├── requirements.txt      # Runtime dependencies
-├── requirements-dev.txt  # Test and build dependencies
-├── pyproject.toml        # Project metadata and pytest settings
-└── tests/
-    └── test_vault.py     # Automated tests
+|-- vault.py              # CLI application
+|-- vault.bat             # Windows launcher
+|-- vault.spec            # PyInstaller configuration
+|-- build_exe.bat         # Windows build helper
+|-- requirements.txt      # Runtime dependencies
+|-- requirements-dev.txt  # Test and build dependencies
+|-- pyproject.toml        # Project metadata and pytest settings
+\-- tests/
+    \-- test_vault.py     # Automated tests
 ```
 
 ## Troubleshooting
@@ -497,6 +497,17 @@ then securely delete the CSV file and empty the recycle bin or trash.
   privileged processes.
 - The application does not synchronize vaults between devices.
 - The project has not been independently security audited.
+
+## Security Overview and Vulnerability Reporting
+
+This repository enforces proactive security practices:
+
+- Security Policy: Review [SECURITY.md](SECURITY.md) for disclosure guidelines.
+- Private Vulnerability Reporting: Enabled to privately report vulnerabilities.
+- Dependabot Alerts and Security Updates: Enabled for automated dependency tracking.
+- Secret Scanning: Enabled with push protection to prevent secret leakage.
+- Code Scanning: Enabled with GitHub CodeQL for automated vulnerability detection.
+- Branch Protection: Enforced on the main branch to protect history and stability.
 
 ## License
 

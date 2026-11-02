@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "secure-password-vault"
-version = "3.3.1"
-description = "A local-first encrypted password vault"
+version = "3.4.0"
+description = "A local-first encrypted password vault with Argon2id, TOTP, and zero-trust security"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
   "cryptography>=42,<51",
   "pyperclip>=1.8,<2",
+  "qrcode>=7.4,<9",
 ]
 
 [project.scripts]
@@ -18,7 +21,9 @@ vault = "vault:main"
 [project.optional-dependencies]
 dev = [
   "pyinstaller>=6,<7",
-  "pytest>=8,<9",
+  "pytest>=8,<10",
+  "ruff>=0.8",
+  "mypy>=1.10",
 ]
 
 [tool.pytest.ini_options]
@@ -26,4 +31,24 @@ testpaths = ["tests"]
 addopts = "-ra"
 
 [tool.setuptools]
+packages = ["vault", "vault.features"]
 py-modules = ["vault"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+"vault.py" = ["F401", "F403"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true

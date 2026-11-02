@@ -5,13 +5,14 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(SPECPATH)
 ICON_PATH = str(PROJECT_ROOT / "app.ico") if (PROJECT_ROOT / "app.ico").is_file() else None
+VERSION_INFO_PATH = str(PROJECT_ROOT / "version_info.txt") if (PROJECT_ROOT / "version_info.txt").is_file() else None
 
 a = Analysis(
     [str(PROJECT_ROOT / 'vault.py')],
     pathex=[str(PROJECT_ROOT)],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=['qrcode', 'cryptography.hazmat.primitives.kdf.argon2'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -42,4 +43,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=ICON_PATH,
+    version=VERSION_INFO_PATH,
 )

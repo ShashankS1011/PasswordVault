@@ -1,0 +1,170 @@
+# -*- coding: utf-8 -*-
+"""Import credentials from CSV, Bitwarden JSON, and 1Password formats (Improvements #27, #30)."""
+from __future__ import annotations
+
+import csv
+import json
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlparse
+
+from vault.models import validate_entry
+from vault.storage import shred_file
+
+CSV_ALIASES = {
+    "name": ("name", "title", "login_name"),
+    "url": ("url", "login_uri", "website", "web site", "origin"),
+    "username": ("username", "login_username", "user", "login", "email"),
+    "password": ("password", "login_password", "pass"),
+    "notes": ("notes", "note", "comment"),
+    "totp": ("totp", "otp", "2fa", "authenticator"),
+}
+
+
+def _csv_pick(row: Dict[str, str], aliases: Tuple[str, ...]) -> str:
+    lowers = {k.strip().lower(): v for k, v in row.items() if k}
+    for alias in aliases:
+        if alias in lowers and lowers[alias]:
+            return lowers[alias].strip()
+    return ""
+
+
+def _pick_conflict_name(base: str, existing: Dict[str, Any]) -> str:
+    if base not in existing:
+        return base
+    idx = 2
+    while f"{base} ({idx})" in existing:
+        idx += 1
+    return f"{base} ({idx})"
+
+
+def import_csv(
+    vault: Dict[str, Any],
+    session: Any,
+    csv_path: Path,
+    on_conflict: str = "rename",
+    conflict_mode: Optional[str] = None,
+    offer_delete: bool = False,
+    auto_shred: bool = False,
+) -> int:
+    """Import credentials from standard CSV formats."""
+    from vault.crypto import save_vault
+
+    mode = conflict_mode or on_conflict
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"File not found: {csv_path}")
+
+    added = 0
+    skipped = 0
+
+    with open(csv_path, "r", encoding="utf-8-sig", errors="replace") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            pwd = _csv_pick(row, CSV_ALIASES["password"])
+            if not pwd:
+                skipped += 1
+                continue
+
+            name = _csv_pick(row, CSV_ALIASES["name"])
+            url = _csv_pick(row, CSV_ALIASES["url"])
+            user = _csv_pick(row, CSV_ALIASES["username"])
+            notes = _csv_pick(row, CSV_ALIASES["notes"])
+            totp = _csv_pick(row, CSV_ALIASES["totp"])
+
+            if not name and url:
+                parsed = urlparse(url)
+                name = parsed.netloc or parsed.path
+            if not name:
+                name = f"Imported-{added + 1}"
+
+            if name in vault:
+                if mode == "skip":
+                    skipped += 1
+                    continue
+                elif mode == "rename":
+                    name = _pick_conflict_name(name, vault)
+
+            entry: Dict[str, Any] = {
+                "type": "password",
+                "username": user,
+                "password": pwd,
+            }
+            if url:
+                entry["url"] = url
+            if notes:
+                entry["notes"] = notes
+            if totp:
+                entry["totp_secret"] = totp
+
+            vault[name] = validate_entry(entry, name)
+            added += 1
+
+    save_vault(session, vault)
+    if auto_shred:
+        shred_file(csv_path)
+
+    return added
+
+
+def import_bitwarden_json(
+    vault: Dict[str, Any],
+    session: Any,
+    json_path: Path,
+    conflict_mode: str = "rename",
+    auto_shred: bool = False,
+) -> Tuple[int, int]:
+    """Import items from Bitwarden JSON export."""
+    from vault.crypto import save_vault
+
+    if not json_path.is_file():
+        raise FileNotFoundError(f"File not found: {json_path}")
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    items = data.get("items", [])
+    added = 0
+    skipped = 0
+
+    for item in items:
+        login = item.get("login") or {}
+        pwd = login.get("password", "")
+        if not pwd and item.get("type") == 1:
+            skipped += 1
+            continue
+
+        name = item.get("name") or "Unnamed"
+        username = login.get("username", "")
+        totp = login.get("totp", "")
+        notes = item.get("notes", "")
+
+        urls = login.get("uris", [])
+        url = urls[0].get("uri", "") if urls and isinstance(urls[0], dict) else ""
+
+        # Extract custom fields
+        custom_fields: Dict[str, str] = {}
+        for f in item.get("fields", []):
+            if isinstance(f, dict) and f.get("name") and f.get("value"):
+                custom_fields[f["name"]] = str(f["value"])
+
+        if name in vault:
+            if conflict_mode == "skip":
+                skipped += 1
+                continue
+            elif conflict_mode == "rename":
+                name = _pick_conflict_name(name, vault)
+
+        entry = {
+            "type": "password",
+            "username": username,
+            "password": pwd,
+            "url": url,
+            "notes": notes,
+            "totp_secret": totp,
+            "custom_fields": custom_fields,
+        }
+        vault[name] = validate_entry(entry, name)
+        added += 1
+
+    save_vault(session, vault)
+    if auto_shred:
+        shred_file(json_path)
+    return added, skipped

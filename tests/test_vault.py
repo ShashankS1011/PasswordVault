@@ -6,8 +6,9 @@ from pathlib import Path
 # Make sure the project root is on the path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import vault as v
 import pytest
+
+import vault as v
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,15 @@ your vault.
 
 ## Features
 
-- Encrypted local storage with Scrypt and Fernet.
+- Encrypted local storage with **Argon2id (RFC 9106)** and **AEAD AES-256-GCM** (with Scrypt/PBKDF2 compatibility).
+- Native suppression of Windows Clipboard History (Win+V) & Cloud Clipboard.
+- Built-in TOTP 2FA authenticator (ault totp NAME).
+- Have I Been Pwned breach checks (ault pwned).
+- Printable Emergency Recovery Kit (ault emergency-kit).
+- Password history, custom fields, tags, and pinned favorites.
+- Multi-shell tab completion for PowerShell, Bash, Zsh, and Fish.
+- Bitwarden JSON and browser CSV imports with secure file shredding.
+- Cross-process file locking and automatic rolling snapshots.
 - Password and passphrase generation using Python's `secrets` module.
 - Password strength feedback and duplicate-secret detection.
 - API-key expiry warnings and rotation reminders.
@@ -492,4 +500,4 @@ then securely delete the CSV file and empty the recycle bin or trash.
 
 ## License
 
-Add the project's chosen license here before distributing the application.
+Licensed under the MIT License. See [LICENSE](LICENSE) for details.

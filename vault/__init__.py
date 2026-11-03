@@ -18,6 +18,7 @@ from vault.cli import (
     cmd_get,
     cmd_import,
     cmd_list,
+    cmd_open,
     cmd_restore,
     cmd_run,
     main,
@@ -239,5 +240,6 @@ __all__ = [
     "get_completion_script",
     "handle_git_credential",
     "run_native_messaging_host",
+    "cmd_open",
     "main",
 ]

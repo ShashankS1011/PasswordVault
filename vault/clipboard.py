@@ -194,6 +194,14 @@ def spawn_clipboard_cleaner(text: str, timeout: int) -> bool:
         return False
 
 
+def render_countdown_bar(remaining: int, total: int, width: int = 15) -> str:
+    """Render a clean ASCII progress bar for clipboard clearing countdown."""
+    frac = max(0.0, min(1.0, remaining / max(1, total)))
+    filled = int(round(frac * width))
+    empty = width - filled
+    return f"[{'=' * filled}{'.' * empty}]"
+
+
 def copy_with_autoclear(
     text: str,
     timeout: int = 15,
@@ -225,13 +233,14 @@ def copy_with_autoclear(
         try:
             for remaining in range(timeout, 0, -1):
                 if sys.stdout.isatty():
-                    print(f"\r  Clipboard clears in {remaining:2d}s (Ctrl+C to clear now)  ", end="", flush=True)
+                    bar = render_countdown_bar(remaining, timeout)
+                    print(f"\r  Clipboard auto-clears in {bar} {remaining:2d}s (Ctrl+C to clear now)  ", end="", flush=True)
                 time.sleep(1)
         except KeyboardInterrupt:
             pass
         clear_clipboard_if_ours()
         if sys.stdout.isatty():
-            print("\r" + " " * 70, end="\r")
+            print("\r" + " " * 75, end="\r")
         if ui_callbacks and "ok" in ui_callbacks:
             ui_callbacks["ok"]("Clipboard cleared.")
     else:

@@ -16,25 +16,38 @@ your vault.
 
 - Encrypted local storage with **Argon2id (RFC 9106)** and **AEAD AES-256-GCM** (with Scrypt/PBKDF2 compatibility).
 - Native suppression of Windows Clipboard History (Win+V) & Cloud Clipboard.
-- Built-in TOTP 2FA authenticator (ault totp NAME).
-- Have I Been Pwned breach checks (ault pwned).
-- Printable Emergency Recovery Kit (ault emergency-kit).
+- Interactive arrow-key navigation and live real-time search filtering.
+- Shannon entropy bit calculation and offline brute-force crack-time estimation.
+- Character composition breakdown badges ([len: 20] [upper: 4] [lower: 10] [digit: 3] [sym: 3]).
+- Clean box-framed credential cards with aligned borders and masked secrets.
+- Animated in-terminal copy countdown progress bar ([==========] 15s).
+- Interactive tag selector with autocompletion from existing vault tags.
+- Result pagination for browsing large vaults with keyboard navigation.
+- Side-by-side visual diff summarizing field modifications before saving.
+- Hierarchical breadcrumb navigation trails in submenus (Vault > Edit Entry > GitHub).
+- Contextual keyboard shortcut legend footer bar in interactive dialogs.
+- Compact single-line listing mode (vault list --compact).
+- Real-time search character highlighting for exact and fuzzy query matches.
+- Expanded terminal themes: Dark, Light, High-Contrast, Dracula, Nord, Solarized-Dark, and Mono.
+- Visual security health meter gauge (0-100%) with actionable grading.
+- Single-key quick action hotkeys in entry view ([c]opy, [u]sername, [o]pen url, [t]otp, [q]r, [e]dit, [d]elete).
+- One-click URL browser launcher (vault open NAME).
+- Safety-first confirmation dialogs with highlighted defaults.
+- Multi-candidate password and passphrase generator preview.
+- Raw and quiet scripting modes (vault get NAME --raw and --quiet).
+- Built-in TOTP 2FA authenticator (vault totp NAME).
+- Have I Been Pwned breach checks (vault pwned).
+- Printable Emergency Recovery Kit (vault emergency-kit).
 - Password history, custom fields, tags, and pinned favorites.
 - Multi-shell tab completion for PowerShell, Bash, Zsh, and Fish.
 - Bitwarden JSON and browser CSV imports with secure file shredding.
 - Cross-process file locking and automatic rolling snapshots.
-- Password and passphrase generation using Python's `secrets` module.
-- Password strength feedback and duplicate-secret detection.
-- API-key expiry warnings and rotation reminders.
+- Password and passphrase generation using Python's secrets module.
+- Duplicate-secret detection, API-key expiry warnings, and rotation reminders.
 - Search by entry name, username, notes, or typo-tolerant fuzzy matching.
-- Clipboard copying with automatic clearing.
-- Brief secret display mode that hides the screen after a timeout.
 - Automatic locking after inactivity in the interactive menu.
 - Encrypted backups, exports, and a recoverable encrypted trash.
-- CSV import for common browser and Bitwarden-style exports.
-- `vault run` for injecting selected secrets into a child process.
-- Password health dashboard and diagnostic mode.
-- Optional PowerShell tab completion using entry names only.
+- vault run for injecting selected secrets into a child process.
 - Standalone Windows executable builds with PyInstaller.
 
 ## Security model
@@ -192,17 +205,33 @@ Show a secret temporarily instead of copying it:
 ```text
 vault get NAME --show
 vault NAME --show
+`
+
+Print only the raw secret value for scripts and pipelines without extra text:
+
+`	ext
+vault get NAME --raw
+vault get NAME --quiet
 ```
 
 ### List names without secrets
 
 ```text
 vault list
+vault list --compact
 vault list --json
 ```
 
 The JSON form prints an array containing entry names only. Secret values,
 usernames, notes, and API keys are not included.
+
+### Open service login URL in browser
+
+`	ext
+vault open NAME
+`
+
+Launches the configured website or login URL directly in your system's default browser.
 
 ### Generate a password
 
@@ -321,6 +350,9 @@ vault config
 vault --theme dark
 vault --theme light
 vault --theme contrast
+vault --theme dracula
+vault --theme nord
+vault --theme solarized-dark
 vault --theme mono
 ```
 

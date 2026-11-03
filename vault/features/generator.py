@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import secrets
 import string
-from typing import List
+from typing import List, Tuple
 
 # Ambiguous characters often misread on screen or paper
 AMBIGUOUS_CHARS = "0O1lI|"
@@ -197,3 +197,29 @@ def generate_passphrase(
         chosen[-1] = chosen[-1] + str(secrets.randbelow(100))
 
     return sep.join(chosen)
+
+
+def generate_candidates(
+    count: int = 3,
+    length: int = 20,
+    symbols: bool = True,
+    exclude_ambiguous: bool = True,
+    words: int = 0,
+    sep: str = "-",
+) -> List[Tuple[str, float, str]]:
+    """Generate multiple candidate secrets with their Shannon entropy and crack time."""
+    from vault.ui import calculate_entropy
+
+    candidates: List[Tuple[str, float, str]] = []
+    for _ in range(max(1, min(count, 10))):
+        if words > 0:
+            candidate = generate_passphrase(words=words, sep=sep)
+        else:
+            candidate = generate_random_password(
+                length=length,
+                symbols=symbols,
+                exclude_ambiguous=exclude_ambiguous,
+            )
+        ent, crack_time = calculate_entropy(candidate)
+        candidates.append((candidate, ent, crack_time))
+    return candidates

@@ -37,13 +37,18 @@ from vault.crypto import (
 )
 from vault.exporters import export_dotenv, export_vault, to_env_name
 from vault.features.emergency import generate_emergency_kit
-from vault.features.generator import generate_passphrase, generate_random_password
+from vault.features.generator import (
+    generate_candidates,
+    generate_passphrase,
+    generate_random_password,
+)
 from vault.features.health import (
+    calculate_health_score,
     collect_health,
     find_matches,
 )
 from vault.features.pwned import audit_vault_breaches, check_password_breach
-from vault.features.totp import display_totp_live, generate_totp
+from vault.features.totp import display_totp_live
 from vault.importers import import_bitwarden_json, import_csv
 from vault.integrations import (
     get_completion_script,
@@ -51,11 +56,9 @@ from vault.integrations import (
     run_native_messaging_host,
 )
 from vault.models import (
-    entry_custom_fields,
     entry_is_favorite,
     entry_secret,
     entry_totp,
-    entry_type,
     validate_entry,
 )
 from vault.storage import (
@@ -74,32 +77,41 @@ from vault.storage import (
 from vault.ui import (
     ACCENT,
     BOLD,
-    DIM,
     ERR,
     G_DOT,
     G_H,
-    G_OK,
     G_PROMPT,
-    G_WARN,
     HEAD,
     INV,
     MUTED,
     OK,
     RST,
+    THEME_NAMES,
     WARN,
     AutoLock,
     Spinner,
     apply_theme,
+    calculate_entropy,
+    character_breakdown,
     clear_screen,
     confirm,
+    confirm_action,
     effective_theme,
     err,
+    interactive_select,
     note,
     ok,
+    open_url,
     pause,
     print_banner,
     print_header,
     prompt,
+    prompt_tags,
+    render_breadcrumbs,
+    render_credential_card,
+    render_diff,
+    render_footer_shortcuts,
+    render_health_gauge,
     render_qr_ascii,
     secret_prompt,
     strength_line,
@@ -211,9 +223,16 @@ def deliver_secret(
     show: bool = False,
     show_qr: bool = False,
     show_totp: bool = False,
+    raw: bool = False,
+    quiet: bool = False,
 ) -> None:
     sec = entry_secret(entry)
     user = entry.get("username", "")
+
+    if raw:
+        sys.stdout.write(sec)
+        sys.stdout.flush()
+        return
 
     if show_totp:
         totp_seed = entry_totp(entry)
@@ -222,6 +241,7 @@ def deliver_secret(
             return
         else:
             err(f"No TOTP secret configured for '{name}'.")
+            return
 
     if show_qr:
         print_header(f"QR Code · {name}")
@@ -239,39 +259,19 @@ def deliver_secret(
         except KeyboardInterrupt:
             pass
         wipe_screen()
-        ok("Secret cleared from display.")
+        if not quiet:
+            ok("Secret cleared from display.")
     else:
+        cb = {"ok": ok, "err": err, "note": note} if not quiet else None
         copy_with_autoclear(
             sec,
             timeout=CLIPBOARD_TIMEOUT,
-            ui_callbacks={"ok": ok, "err": err, "note": note},
+            ui_callbacks=cb,
         )
 
 
-def print_entry_details(name: str, entry: Dict[str, Any]) -> None:
-    print_header(f"Entry · {name}")
-    etype = entry_type(entry)
-    print(f"  Type:        {HEAD}{etype}{RST}")
-    if entry.get("username"):
-        print(f"  Username:    {BOLD}{entry['username']}{RST}")
-    if entry.get("url"):
-        print(f"  URL:         {ACCENT}{entry['url']}{RST}")
-    if entry.get("totp_secret"):
-        code, rem = generate_totp(entry["totp_secret"])
-        print(f"  TOTP (2FA):  {OK}{code[:3]} {code[3:]}{RST} {MUTED}({rem}s left){RST}")
-    if entry.get("tags"):
-        print(f"  Tags:        {MUTED}{', '.join(entry['tags'])}{RST}")
-    if entry_is_favorite(entry):
-        print(f"  Favorite:    {WARN}★ Pinned{RST}")
-    if entry.get("env"):
-        print(f"  Env Var:     {DIM}{entry['env']}{RST}")
-    if entry.get("expires"):
-        print(f"  Expires:     {WARN}{entry['expires']}{RST}")
-    if entry.get("notes"):
-        print(f"  Notes:       {entry['notes']}")
-    for k, v in entry_custom_fields(entry).items():
-        print(f"  {k}:        {v}")
-    print()
+def print_entry_details(name: str, entry: Dict[str, Any], show_secret: bool = False) -> None:
+    render_credential_card(name, entry, show_secret=show_secret)
 
 
 # ---------------------------------------------------------------------------
@@ -364,9 +364,9 @@ def run_vault_app() -> int:
 
 def print_menu_header(user_name: str, vault: Dict[str, Any]) -> None:
     h = collect_health(vault)
-    n_alerts = len(h["expired"]) + len(h["expiring"]) + len(h["weak"])
-    status = f"{WARN}{G_WARN} {n_alerts} issues need attention{RST}" if n_alerts else f"{OK}{G_OK} all clear{RST}"
-    print(f"\n  {BOLD}Password Vault{RST}  {MUTED}{G_DOT}  {user_name}  {G_DOT}  {len(vault)} entries  {G_DOT}  {status}{RST}")
+    score = calculate_health_score(h)
+    gauge = render_health_gauge(score, width=10)
+    print(f"\n  {BOLD}Password Vault{RST}  {MUTED}{G_DOT}  {user_name}  {G_DOT}  {len(vault)} entries  {G_DOT}  {gauge}{RST}")
     print(f"  {MUTED}{G_H * (term_width() - 4)}{RST}\n")
 
 
@@ -378,31 +378,44 @@ def print_menu_options() -> None:
     print(f"    {HEAD} 7{RST}  Trash & Recovery       {HEAD} 8{RST}  Health & Breach Audit  {HEAD} 9{RST}  TOTP 2FA Authenticator")
     print(f"\n  {MUTED}MAINTENANCE & SECURITY{RST}")
     print(f"    {HEAD}10{RST}  Backup & Export        {HEAD}11{RST}  Settings & Quick PIN   {HEAD} 0{RST}  Lock & Exit\n")
+    render_footer_shortcuts([("1-11", "Select"), ("0", "Lock vault")])
 
 
 # ---------------------------------------------------------------------------
 # Dialog Handlers
 # ---------------------------------------------------------------------------
 def add_password_dialog(vault: Dict[str, Any], session: Session) -> None:
+    render_breadcrumbs("Vault", "Add Password")
     print_header("Add Password Entry")
     name = prompt("Service / Website Name (e.g. GitHub): ").strip()
     if not name:
         return
     username = prompt("Username / Email: ").strip()
     url = prompt("Login URL (optional): ").strip()
-    tags_str = prompt("Tags (comma separated, e.g. work, dev): ").strip()
-    tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+    known_tags = [t for v in vault.values() for t in v.get("tags", [])]
+    tags = prompt_tags(known_tags)
 
     choice = prompt("(G)enerate strong password or (T)ype your own? [G/t]: ").strip().lower()
     if choice == "t":
         pwd = secret_prompt("Enter Password: ")
-        print(f"  Strength: {strength_line(pwd)}")
+        ent, crack_time = calculate_entropy(pwd)
+        print(f"  Strength:  {strength_line(pwd)}  ·  {ent} bits ({crack_time})")
+        print(f"  Breakdown: {character_breakdown(pwd)}")
     else:
-        pwd = generate_random_password(length=24, symbols=True, exclude_ambiguous=True)
-        note("Generated high-entropy password without ambiguous characters.")
+        candidates = generate_candidates(count=3, length=24, symbols=True, exclude_ambiguous=True)
+        print(f"\n  {HEAD}Generated Candidates:{RST}")
+        for idx, (cand, ent, ct) in enumerate(candidates, 1):
+            print(f"    {HEAD}{idx}{RST}  {BOLD}{cand}{RST}  {MUTED}({ent} bits, {ct}){RST}")
+        cand_sel = prompt("Select candidate [1-3] or Enter for 1: ").strip()
+        try:
+            chosen_cand_idx = int(cand_sel) - 1 if cand_sel.isdigit() and 1 <= int(cand_sel) <= 3 else 0
+        except Exception:
+            chosen_cand_idx = 0
+        pwd = candidates[chosen_cand_idx][0]
+        note(f"Selected candidate #{chosen_cand_idx + 1}.")
 
     totp_secret = prompt("TOTP Authenticator Secret (optional, Enter to skip): ").strip()
-    fav = confirm("Pin as Favorite?")
+    fav = confirm_action("Pin as Favorite?", default=False)
 
     entry = {
         "type": "password",
@@ -424,6 +437,7 @@ def add_password_dialog(vault: Dict[str, Any], session: Session) -> None:
 
 
 def add_api_key_dialog(vault: Dict[str, Any], session: Session) -> None:
+    render_breadcrumbs("Vault", "Add API Key")
     print_header("Add API Key Entry")
     name = prompt("Service Name (e.g. OpenAI - Production): ").strip()
     if not name:
@@ -456,6 +470,7 @@ def add_api_key_dialog(vault: Dict[str, Any], session: Session) -> None:
 
 
 def get_secret_dialog(vault: Dict[str, Any], session: Session) -> None:
+    render_breadcrumbs("Vault", "Get Secret")
     query = prompt("Search entry name, username, or tag: ").strip()
     matches, _ = find_matches(vault, query)
     if not matches:
@@ -464,43 +479,76 @@ def get_secret_dialog(vault: Dict[str, Any], session: Session) -> None:
 
     chosen = matches[0] if len(matches) == 1 else None
     if not chosen:
-        print("\n  Matches:")
-        for idx, m in enumerate(matches[:15], 1):
-            fav = "★ " if entry_is_favorite(vault[m]) else "  "
-            print(f"    {HEAD}{idx:>2}{RST}  {fav}{m}")
-        sel = prompt("Select number: ").strip()
-        try:
-            chosen = matches[int(sel) - 1]
-        except Exception:
+        chosen = interactive_select(matches, prompt_text="Select matching entry")
+        if not chosen:
             return
 
     entry = vault[chosen]
     print_entry_details(chosen, entry)
-    mode = prompt("[C]opy password, [S]how briefly, [T]OTP code, [Q]R code? [C/s/t/q]: ").strip().lower()
+    render_footer_shortcuts([
+        ("c", "copy pwd"),
+        ("s", "show"),
+        ("u", "username"),
+        ("o", "open url"),
+        ("t", "totp"),
+        ("q", "qr"),
+        ("e", "edit"),
+        ("d", "delete"),
+    ])
+    mode = prompt("Action [C/s/u/o/t/q/e/d]: ").strip().lower()
 
     if mode == "s":
         deliver_secret(chosen, entry, show=True)
+    elif mode == "u":
+        u = entry.get("username", "")
+        if u:
+            copy_with_autoclear(u, timeout=CLIPBOARD_TIMEOUT, ui_callbacks={"ok": ok})
+        else:
+            warn(f"No username configured for '{chosen}'.")
+    elif mode == "o":
+        url = entry.get("url", "")
+        if url:
+            if open_url(url):
+                ok(f"Opened {url} in browser.")
+            else:
+                err(f"Could not open browser for '{url}'.")
+        else:
+            warn(f"No URL configured for '{chosen}'.")
     elif mode == "t":
         deliver_secret(chosen, entry, show_totp=True)
     elif mode == "q":
         deliver_secret(chosen, entry, show_qr=True)
+    elif mode == "e":
+        edit_entry_dialog(vault, session, preselected=chosen)
+    elif mode == "d":
+        delete_entry_dialog(vault, session, preselected=chosen)
     else:
         deliver_secret(chosen, entry, show=False)
 
 
-def edit_entry_dialog(vault: Dict[str, Any], session: Session) -> None:
-    name = prompt("Enter name of entry to edit: ").strip()
+def edit_entry_dialog(
+    vault: Dict[str, Any],
+    session: Session,
+    preselected: Optional[str] = None,
+) -> None:
+    name = preselected or prompt("Enter name of entry to edit: ").strip()
     if name not in vault:
         warn(f"'{name}' not found.")
         return
+    render_breadcrumbs("Vault", "Edit Entry", name)
     entry = vault[name]
+    old_entry = dict(entry)
     print_entry_details(name, entry)
 
     new_user = prompt(f"Username [{entry.get('username', '')}]: ").strip()
     if new_user:
         entry["username"] = new_user
 
-    if confirm("Change password / secret?"):
+    new_url = prompt(f"URL [{entry.get('url', '')}]: ").strip()
+    if new_url:
+        entry["url"] = new_url
+
+    if confirm_action("Change password / secret?", default=False):
         old_sec = entry_secret(entry)
         entry.setdefault("history", []).append({
             "secret": old_sec,
@@ -515,23 +563,32 @@ def edit_entry_dialog(vault: Dict[str, Any], session: Session) -> None:
         else:
             entry["password"] = new_sec
 
-    vault[name] = validate_entry(entry, name)
-    save_vault(session, vault)
-    ok(f"Updated '{name}'.")
+    render_diff(old_entry, entry)
+    if confirm_action("Save updated entry?", default=True):
+        vault[name] = validate_entry(entry, name)
+        save_vault(session, vault)
+        ok(f"Updated '{name}'.")
+    else:
+        warn("Changes discarded.")
 
 
-def delete_entry_dialog(vault: Dict[str, Any], session: Session) -> None:
-    name = prompt("Name of entry to delete: ").strip()
+def delete_entry_dialog(
+    vault: Dict[str, Any],
+    session: Session,
+    preselected: Optional[str] = None,
+) -> None:
+    name = preselected or prompt("Name of entry to delete: ").strip()
     if name not in vault:
         warn(f"'{name}' not found.")
         return
-    if confirm(f"Move '{name}' to encrypted trash?"):
+    if confirm_action(f"Move '{name}' to encrypted trash?", default=False, danger=True):
         trash_add(session, name, vault.pop(name))
         save_vault(session, vault)
         ok(f"Moved '{name}' to trash (recoverable for {TRASH_DAYS} days).")
 
 
 def trash_dialog(vault: Dict[str, Any], session: Session) -> None:
+    render_breadcrumbs("Vault", "Trash")
     print_header("Trash Management")
     trash = load_trash(session)
     if not trash:
@@ -555,20 +612,33 @@ def trash_dialog(vault: Dict[str, Any], session: Session) -> None:
             ok(f"Restored '{item_to_restore}' to vault.")
         except Exception:
             err("Invalid selection.")
-    elif sub == "e" and confirm("Permanently purge all deleted items?"):
+    elif sub == "e" and confirm_action("Permanently purge all deleted items?", default=False, danger=True):
         empty_trash(session)
         ok("Trash emptied.")
 
 
 def health_dashboard_dialog(vault: Dict[str, Any]) -> None:
+    render_breadcrumbs("Vault", "Health & Audit")
     print_header("Vault Health & Breach Audit")
     with Spinner("Analyzing vault health"):
         h = collect_health(vault, check_pwned=False)
 
+    score = calculate_health_score(h)
+    print(f"  Security Score:    {render_health_gauge(score, width=15)}")
     print(f"  Total Credentials: {BOLD}{h['total_entries']}{RST}")
     print(f"  Weak Passwords:    {ERR if h['weak'] else OK}{len(h['weak'])}{RST}")
     print(f"  Reused Passwords:  {WARN if h['duplicates'] else OK}{len(h['duplicates'])}{RST}")
     print(f"  Expired Keys:      {ERR if h['expired'] else OK}{len(h['expired'])}{RST}")
+
+    if confirm_action("Run HaveIBeenPwned k-anonymity breach check on all passwords?", default=False):
+        with Spinner("Auditing passwords against HIBP"):
+            breached = audit_vault_breaches(vault)
+        if breached:
+            print(f"\n  {ERR}{BOLD}BREACHED PASSWORDS DETECTED:{RST}")
+            for name, count in breached:
+                print(f"    {ERR}×{RST} {name:<20} found in {BOLD}{count:,}{RST} data breaches!")
+        else:
+            ok("No stored passwords found in public breach databases.")
 
     if confirm("Run HaveIBeenPwned k-anonymity breach check on all passwords?"):
         with Spinner("Auditing passwords against HIBP"):
@@ -645,7 +715,7 @@ def config_dialog(session: Session) -> None:
 
     sub = prompt("Select setting to update (or Enter to cancel): ").strip()
     if sub == "1":
-        th = prompt("Choose theme (dark/light/contrast/mono/auto): ").strip().lower()
+        th = prompt(f"Choose theme ({'/'.join(THEME_NAMES)}/auto): ").strip().lower()
         save_config(theme=th)
         apply_theme(effective_theme(requested=th))
         ok("Theme updated.")
@@ -677,16 +747,56 @@ def cmd_list(argv: Optional[List[str]] = None) -> int:
     unlock = getattr(v, "unlock_vault", unlock_vault)
     args = list(argv or [])
     json_output = "--json" in args
+    compact = "--compact" in args or "-c" in args
     _, vault = unlock()
     if vault is None:
         return 1
     names = sorted(vault.keys())
     if json_output:
         print(json.dumps(names))
+    elif compact:
+        for n in names:
+            e = vault[n]
+            u = e.get("username", "")
+            tags = e.get("tags", [])
+            tag_str = f" [{', '.join(tags)}]" if tags else ""
+            user_str = f" ({u})" if u else ""
+            print(f"  {n}{user_str}{tag_str}")
     else:
         for n in names:
             print(f"  {n}")
     return 0
+
+
+def cmd_open(argv: Optional[List[str]] = None) -> int:
+    import sys
+    v = sys.modules.get("vault")
+    unlock = getattr(v, "unlock_vault", unlock_vault)
+
+    parser = argparse.ArgumentParser(prog="vault open")
+    parser.add_argument("name", nargs="?", default="")
+    args = parser.parse_args(argv or [])
+    if not args.name:
+        err("Specify entry name to open.")
+        return 1
+    session, vault = unlock()
+    if not session or not vault:
+        return 1
+    matches, _ = find_matches(vault, args.name)
+    if not matches:
+        err(f"Entry '{args.name}' not found.")
+        return 1
+    entry = vault[matches[0]]
+    url = entry.get("url")
+    if not url:
+        err(f"No URL stored for entry '{matches[0]}'.")
+        return 1
+    if open_url(url):
+        ok(f"Opened {url} in browser.")
+        return 0
+    else:
+        err(f"Could not open browser for '{url}'.")
+        return 1
 
 
 def cmd_delete(argv: Optional[List[str]] = None) -> int:
@@ -722,14 +832,20 @@ def cmd_delete(argv: Optional[List[str]] = None) -> int:
 
 
 def cmd_get(argv: Optional[List[str]] = None) -> int:
+    import sys
+    v = sys.modules.get("vault")
+    unlock = getattr(v, "unlock_vault", unlock_vault)
+
     parser = argparse.ArgumentParser(prog="vault get")
     parser.add_argument("name", nargs="?", default="")
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--totp", action="store_true")
     parser.add_argument("--qr", action="store_true")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--raw", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv or [])
-    session, vault = unlock_vault()
+    session, vault = unlock()
     if not session or not vault:
         return 1
     matches, _ = find_matches(vault, args.name)
@@ -740,7 +856,15 @@ def cmd_get(argv: Optional[List[str]] = None) -> int:
     if args.json:
         print(json.dumps({matches[0]: entry}, indent=2))
         return 0
-    deliver_secret(matches[0], entry, show=args.show, show_qr=args.qr, show_totp=args.totp)
+    deliver_secret(
+        matches[0],
+        entry,
+        show=args.show,
+        show_qr=args.qr,
+        show_totp=args.totp,
+        raw=args.raw,
+        quiet=args.quiet,
+    )
     return 0
 
 
@@ -913,6 +1037,7 @@ SUBCOMMANDS = {
     "config": cmd_config,
     "doctor": cmd_doctor,
     "completion": cmd_completion,
+    "open": cmd_open,
 }
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -920,7 +1045,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=f"Secure Password Vault v{VERSION} - Zero-trust local password manager",
     )
     parser.add_argument("--version", action="version", version=f"vault {VERSION}")
-    parser.add_argument("--theme", choices=["dark", "light", "contrast", "mono", "auto"], help="Set terminal theme")
+    parser.add_argument("--theme", choices=THEME_NAMES + ["auto"], help="Set terminal theme")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
     parser.add_argument("--password-fd", type=int, help="Read master password from file descriptor")
     parser.add_argument("--password-env", type=str, help="Read master password from specified env var")
@@ -935,12 +1060,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_get.add_argument("--totp", action="store_true", help="Display live TOTP 2FA code")
     p_get.add_argument("--qr", action="store_true", help="Display secret as terminal QR code")
     p_get.add_argument("--json", action="store_true", help="Output details in machine-readable JSON")
+    p_get.add_argument("--raw", action="store_true", help="Print raw secret only to stdout without newline")
+    p_get.add_argument("--quiet", action="store_true", help="Suppress status output")
 
     # list
     p_list = subparsers.add_parser("list", help="List all entry names")
     p_list.add_argument("--tag", type=str, help="Filter entries by tag")
     p_list.add_argument("--fav", action="store_true", help="Show favorites only")
     p_list.add_argument("--json", action="store_true", help="Output names in JSON array")
+    p_list.add_argument("--compact", "-c", action="store_true", help="Display dense single-line listing")
+
+    # open
+    p_open = subparsers.add_parser("open", help="Open entry login URL in default web browser")
+    p_open.add_argument("name", help="Entry name to open")
 
     # gen
     p_gen = subparsers.add_parser("gen", help="Generate passwords or passphrases")
@@ -1070,7 +1202,31 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.json:
                 print(json.dumps({chosen: entry}, indent=2))
                 return 0
-            deliver_secret(chosen, entry, show=args.show, show_qr=args.qr, show_totp=args.totp)
+            deliver_secret(
+                chosen,
+                entry,
+                show=args.show,
+                show_qr=args.qr,
+                show_totp=args.totp,
+                raw=getattr(args, "raw", False),
+                quiet=getattr(args, "quiet", False),
+            )
+
+        elif args.command == "open":
+            matches, _ = find_matches(vault, args.name)
+            if not matches:
+                err(f"Entry '{args.name}' not found.")
+                return 1
+            entry = vault[matches[0]]
+            url = entry.get("url")
+            if not url:
+                err(f"No URL stored for entry '{matches[0]}'.")
+                return 1
+            if open_url(url):
+                ok(f"Opened {url} in browser.")
+            else:
+                err(f"Could not open browser for '{url}'.")
+                return 1
 
         elif args.command == "list":
             entries = vault
@@ -1081,6 +1237,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             names = sorted(entries.keys())
             if args.json:
                 print(json.dumps(names, indent=2))
+            elif getattr(args, "compact", False):
+                for n in names:
+                    e = entries[n]
+                    u = e.get("username", "")
+                    tags = e.get("tags", [])
+                    tag_str = f" [{', '.join(tags)}]" if tags else ""
+                    user_str = f" ({u})" if u else ""
+                    print(f"  {n}{user_str}{tag_str}")
             else:
                 for n in names:
                     fav = "★ " if entry_is_favorite(entries[n]) else "  "

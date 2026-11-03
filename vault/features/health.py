@@ -87,6 +87,30 @@ def collect_health(vault: Dict[str, Any], check_pwned: bool = False) -> Dict[str
     return report
 
 
+def calculate_health_score(report: Dict[str, Any]) -> int:
+    """Calculate an overall security health score from 0 to 100%."""
+    total = report.get("total_entries", 0)
+    if total == 0:
+        return 100
+
+    score = 100
+    n_weak = len(report.get("weak", []))
+    n_dups = sum(len(names) - 1 for names in report.get("duplicates", {}).values())
+    n_expired = len(report.get("expired", []))
+    n_expiring = len(report.get("expiring", []))
+    n_old = len(report.get("old", []))
+    n_breached = len(report.get("breached", []))
+
+    score -= min(35, n_weak * 12)
+    score -= min(30, n_dups * 10)
+    score -= min(25, n_expired * 15)
+    score -= min(10, n_expiring * 5)
+    score -= min(15, n_old * 4)
+    score -= min(40, n_breached * 25)
+
+    return max(0, min(100, score))
+
+
 def find_matches(vault: Dict[str, Any], term: str, cutoff: float = FUZZY_CUTOFF) -> Tuple[List[str], str]:
     """Search entries with exact, partial, content, or typo-tolerant fuzzy matching."""
     term = term.strip().lower()

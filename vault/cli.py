@@ -636,17 +636,7 @@ def health_dashboard_dialog(vault: Dict[str, Any]) -> None:
         if breached:
             print(f"\n  {ERR}{BOLD}BREACHED PASSWORDS DETECTED:{RST}")
             for name, count in breached:
-                print(f"    {ERR}×{RST} {name:<20} found in {BOLD}{count:,}{RST} data breaches!")
-        else:
-            ok("No stored passwords found in public breach databases.")
-
-    if confirm("Run HaveIBeenPwned k-anonymity breach check on all passwords?"):
-        with Spinner("Auditing passwords against HIBP"):
-            breached = audit_vault_breaches(vault)
-        if breached:
-            print(f"\n  {ERR}{BOLD}BREACHED PASSWORDS DETECTED:{RST}")
-            for name, count in breached:
-                print(f"    {ERR}×{RST} {name:<20} found in {BOLD}{count:,}{RST} data breaches!")
+                print(f"    {ERR}x{RST} {name:<20} found in {BOLD}{count:,}{RST} data breaches!")
         else:
             ok("No stored passwords found in public breach databases.")
 

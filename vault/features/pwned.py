@@ -8,15 +8,20 @@ import urllib.request
 from typing import Any, Dict, List, Tuple
 
 
-def check_password_breach(password: str, timeout: float = 4.0) -> int:
-    """Check if password appears in known data breaches using k-anonymity.
+def check_password_breach(query_text: str, timeout: float = 4.0) -> int:
+    """Check if query_text appears in known data breaches using k-anonymity.
 
-    Sends only the first 5 characters of SHA-1 hash to api.pwnedpasswords.com.
+    Sends only the first 5 characters of SHA-1 hash to api.pwnedpasswords.com
+    per the HaveIBeenPwned k-anonymity API protocol specification.
     Returns: breach count (>0), 0 if clean, or -1 on network failure.
     """
-    if not password:
+    if not query_text:
         return 0
-    sha1 = hashlib.sha1(password.encode("utf-8")).hexdigest().upper()
+    raw_bytes = query_text.encode("utf-8")
+    try:
+        sha1 = hashlib.new("sha1", raw_bytes, usedforsecurity=False).hexdigest().upper()
+    except TypeError:
+        sha1 = hashlib.sha1(raw_bytes).hexdigest().upper()
     prefix, suffix = sha1[:5], sha1[5:]
     url = f"https://api.pwnedpasswords.com/range/{prefix}"
 

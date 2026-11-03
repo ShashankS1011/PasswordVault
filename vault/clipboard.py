@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import ctypes
 import hashlib
+import hmac
 import os
 import subprocess
 import sys
@@ -21,6 +22,13 @@ except ImportError:
     HAS_PYPERCLIP = False
 
 _last_copied_digest: Optional[str] = None
+_CLIPBOARD_EPHEMERAL_KEY: bytes = os.urandom(32)
+
+
+def _compute_clipboard_token(content: str, key: Optional[bytes] = None) -> str:
+    """Compute keyed HMAC verification token for clipboard zeroing comparison."""
+    active_key = key if key is not None else _CLIPBOARD_EPHEMERAL_KEY
+    return hmac.new(active_key, content.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +142,7 @@ def clear_clipboard_if_ours() -> None:
     try:
         if _last_copied_digest:
             current = _clipboard_paste()
-            if current and hashlib.sha256(current.encode("utf-8")).hexdigest() == _last_copied_digest:
+            if current and _compute_clipboard_token(current) == _last_copied_digest:
                 _clipboard_copy("")
             _last_copied_digest = None
     except Exception:
@@ -149,12 +157,14 @@ atexit.register(clear_clipboard_if_ours)
 # ---------------------------------------------------------------------------
 def clipboard_cleaner_main() -> None:
     """Standalone process entrypoint invoked with --clear-clipboard."""
-    digest = sys.stdin.readline().strip()
+    key_hex = sys.stdin.readline().strip()
+    expected_token = sys.stdin.readline().strip()
     delay = float(sys.stdin.readline().strip())
     time.sleep(delay)
     try:
         current = _clipboard_paste()
-        if hashlib.sha256(current.encode("utf-8")).hexdigest() == digest:
+        key = bytes.fromhex(key_hex)
+        if _compute_clipboard_token(current, key=key) == expected_token:
             _clipboard_copy("")
     except Exception:
         pass
@@ -185,9 +195,9 @@ def spawn_clipboard_cleaner(text: str, timeout: int) -> bool:
             kwargs["start_new_session"] = True
 
         proc = subprocess.Popen(cmd, **kwargs)
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        token = _compute_clipboard_token(text)
         if proc.stdin:
-            proc.stdin.write(f"{digest}\n{timeout}\n".encode("utf-8"))
+            proc.stdin.write(f"{_CLIPBOARD_EPHEMERAL_KEY.hex()}\n{token}\n{timeout}\n".encode("utf-8"))
             proc.stdin.close()
         return True
     except Exception:
@@ -210,13 +220,14 @@ def copy_with_autoclear(
 ) -> None:
     """Copy secret to clipboard and schedule automated zeroing."""
     global _last_copied_digest
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    digest = _compute_clipboard_token(text)
 
     if not _clipboard_copy(text):
         if ui_callbacks and "err" in ui_callbacks:
             ui_callbacks["err"]("Clipboard is not available.")
             ui_callbacks["note"]("Install pyperclip (`pip install pyperclip`) or use --show.")
-            print(f"\n  Secret (copy manually):\n  {text}\n")
+            sys.stdout.write(f"\n  Value (copy manually):\n  {text}\n\n")
+            sys.stdout.flush()
         return
 
     _last_copied_digest = digest

@@ -477,6 +477,17 @@ def _dpapi_unprotect(cipher: bytes, entropy: bytes = b"") -> bytes:
     return result
 
 
+def _derive_pin_entropy(pin_code: str) -> bytes:
+    """Derive cryptographic key entropy from user PIN using PBKDF2HMAC."""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b"vault-dpapi-pin-entropy-salt",
+        iterations=100_000,
+    )
+    return kdf.derive(pin_code.encode("utf-8"))
+
+
 def save_quick_unlock(session: Session, pin: str, timeout_seconds: int = 7200) -> bool:
     """Store DPAPI-protected session key with PIN entropy for quick unlock."""
     if not is_dpapi_available() or not pin:
@@ -492,9 +503,7 @@ def save_quick_unlock(session: Session, pin: str, timeout_seconds: int = 7200) -
             "expires_at": time.time() + timeout_seconds,
         }
         encoded = json.dumps(data).encode("utf-8")
-        pin_entropy = hashes.Hash(hashes.SHA256())
-        pin_entropy.update(pin.encode("utf-8"))
-        entropy = pin_entropy.finalize()
+        entropy = _derive_pin_entropy(pin)
 
         protected = _dpapi_protect(encoded, entropy)
         QUICK_UNLOCK_FILE.write_bytes(protected)
@@ -509,9 +518,7 @@ def try_quick_unlock(pin: str) -> Optional[Session]:
         return None
     try:
         protected = QUICK_UNLOCK_FILE.read_bytes()
-        pin_entropy = hashes.Hash(hashes.SHA256())
-        pin_entropy.update(pin.encode("utf-8"))
-        entropy = pin_entropy.finalize()
+        entropy = _derive_pin_entropy(pin)
 
         unprotected = _dpapi_unprotect(protected, entropy)
         data = json.loads(unprotected.decode("utf-8"))

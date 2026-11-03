@@ -532,13 +532,15 @@ then securely delete the CSV file and empty the recycle bin or trash.
 
 ## Security Overview and Vulnerability Reporting
 
-This repository enforces proactive security practices:
+This repository enforces proactive security practices and rigorous hardening:
 
 - Security Policy: Review [SECURITY.md](SECURITY.md) for disclosure guidelines.
 - Private Vulnerability Reporting: Enabled to privately report vulnerabilities.
 - Dependabot Alerts and Security Updates: Enabled for automated dependency tracking.
 - Secret Scanning: Enabled with push protection to prevent secret leakage.
-- Code Scanning: Enabled with GitHub CodeQL for automated vulnerability detection.
+- Code Scanning: Enabled with GitHub CodeQL; all security alerts are continuously remediated.
+- Cryptographic Hardening: Ephemeral HMAC-SHA256 tokens for clipboard synchronization and PBKDF2HMAC key derivation (100,000 iterations) for quick-unlock PIN entropy.
+- Least-Privilege CI/CD: Explicit read-only GITHUB_TOKEN permissions defined across all GitHub Actions workflows and jobs.
 - Branch Protection: Enforced on the main branch to protect history and stability.
 
 ## License

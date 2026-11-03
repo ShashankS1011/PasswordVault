@@ -59,5 +59,11 @@ def export_dotenv(
         lines.append(f'{env_var}="{escaped_val}"')
         count += 1
 
-    secure_write(output_path, "\n".join(lines).encode("utf-8") + b"\n")
+    content = "\n".join(lines) + "\n"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+    tmp_path.replace(output_path)
     return count

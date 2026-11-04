@@ -2,10 +2,12 @@
 """Export routines for encrypted archives, .env configuration, and backups (Improvements #24, #28)."""
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from vault.constants import EXPORT_MAGIC_V3
+from vault.models import entry_custom_fields, entry_secret, entry_totp, entry_type
 from vault.storage import secure_write
 
 
@@ -67,3 +69,66 @@ def export_dotenv(
         f.flush()
     tmp_path.replace(output_path)
     return count
+
+
+def export_encrypted_json(
+    vault: Dict[str, Any],
+    output_path: Path,
+    passphrase: str,
+) -> Path:
+    """Export credentials to an authenticated AES-256-GCM encrypted JSON envelope."""
+    from vault.crypto import pack_encrypted_json
+
+    envelope = pack_encrypted_json(vault, passphrase)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(envelope)
+        f.flush()
+    tmp_path.replace(output_path)
+    return output_path
+
+
+def export_csv(
+    vault: Dict[str, Any],
+    output_path: Path,
+    delimiter: str = ",",
+    fields: Optional[List[str]] = None,
+) -> int:
+    """Export credentials to customizable CSV format."""
+    chosen_fields = fields or ["name", "type", "username", "password", "url", "notes", "totp", "tags"]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+
+    count = 0
+    with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, delimiter=delimiter)
+        writer.writerow(chosen_fields)
+        for name, entry in sorted(vault.items()):
+            row = []
+            for field in chosen_fields:
+                if field == "name":
+                    row.append(name)
+                elif field == "type":
+                    row.append(entry_type(entry))
+                elif field == "username":
+                    row.append(entry.get("username", ""))
+                elif field == "password":
+                    row.append(entry_secret(entry))
+                elif field == "url":
+                    row.append(entry.get("url", ""))
+                elif field == "notes":
+                    row.append(entry.get("notes", ""))
+                elif field == "totp":
+                    row.append(entry_totp(entry))
+                elif field == "tags":
+                    row.append(", ".join(entry.get("tags", [])))
+                else:
+                    custom = entry_custom_fields(entry)
+                    row.append(custom.get(field, ""))
+            writer.writerow(row)
+            count += 1
+        f.flush()
+    tmp_path.replace(output_path)
+    return count
+

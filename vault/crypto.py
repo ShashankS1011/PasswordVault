@@ -49,6 +49,19 @@ def zero_buffer(buf: Any) -> None:
                 buf[i] = 0
 
 
+def wipe_memory(*targets: Any) -> None:
+    """Recursively zero out sensitive buffers, bytearrays, lists, and dict values in memory."""
+    for target in targets:
+        if isinstance(target, (bytearray, memoryview)):
+            zero_buffer(target)
+        elif isinstance(target, list):
+            for item in target:
+                wipe_memory(item)
+        elif isinstance(target, dict):
+            for v in list(target.values()):
+                wipe_memory(v)
+
+
 def lock_memory(data: bytes | bytearray) -> bool:
     """Request OS to keep memory page resident (prevent swapping to disk)."""
     if os.name == "nt":
@@ -547,3 +560,109 @@ def clear_quick_unlock() -> None:
         QUICK_UNLOCK_FILE.unlink(missing_ok=True)
     except Exception:
         pass
+
+
+def verify_vault_integrity(data: bytes) -> Tuple[bool, str]:
+    """Verify structural integrity and valid header format of encrypted container prior to decryption."""
+    if not isinstance(data, (bytes, bytearray)):
+        return False, "Container payload must be bytes"
+    if len(data) == 0:
+        return False, "Container payload is empty"
+    if data.startswith(VAULT_MAGIC_V3):
+        min_v3 = _HEADER_LEN_V3 + _NONCE_LEN + 16
+        if len(data) <= min_v3:
+            return False, f"V3 container truncated (expected > {min_v3} bytes, got {len(data)})"
+        idx = len(VAULT_MAGIC_V3) + 16
+        time_cost, lanes, mem_mb = struct.unpack("!BBH", data[idx : idx + 4])
+        if time_cost < 1 or lanes < 1 or mem_mb < 1:
+            return False, "Invalid Argon2 parameters in V3 header"
+        return True, "Valid V3 container structure"
+    elif data.startswith(VAULT_MAGIC_V2):
+        if len(data) <= _HEADER_LEN_V2:
+            return False, f"V2 container truncated (expected > {_HEADER_LEN_V2} bytes, got {len(data)})"
+        n_log2, r, p = data[len(VAULT_MAGIC_V2) + 16 : _HEADER_LEN_V2]
+        if not (10 <= n_log2 <= 20 and 1 <= r <= 16 and 1 <= p <= 4):
+            return False, "Unsupported Scrypt parameters in V2 header"
+        return True, "Valid V2 container structure"
+    elif data.startswith(EXPORT_MAGIC_V3) or data.startswith(EXPORT_MAGIC):
+        return True, "Valid export archive structure"
+    return False, "Unrecognized or corrupted container header magic"
+
+
+def pack_encrypted_json(payload: Dict[str, Any], passphrase: str) -> str:
+    """Pack arbitrary payload into an authenticated AES-256-GCM encrypted JSON envelope."""
+    salt = os.urandom(16)
+    nonce = os.urandom(_NONCE_LEN)
+    key = derive_argon2_key(
+        passphrase,
+        salt,
+        iterations=ARGON2_TIME_COST,
+        memory_cost=ARGON2_MEMORY_COST,
+        lanes=ARGON2_PARALLELISM,
+    )
+    raw_payload = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    aad = b"PVJSON1:" + salt + nonce
+    ciphertext = AESGCM(key).encrypt(nonce, raw_payload, aad)
+    envelope = {
+        "format": "passwordvault-encrypted-json",
+        "version": 1,
+        "kdf": {
+            "algorithm": "argon2id",
+            "salt": salt.hex(),
+            "time_cost": ARGON2_TIME_COST,
+            "memory_cost": ARGON2_MEMORY_COST,
+            "lanes": ARGON2_PARALLELISM,
+        },
+        "cipher": {
+            "algorithm": "aes-256-gcm",
+            "nonce": nonce.hex(),
+            "ciphertext": ciphertext.hex(),
+        },
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    return json.dumps(envelope, indent=2)
+
+
+def unpack_encrypted_json(envelope_data: str | bytes, passphrase: str) -> Dict[str, Any]:
+    """Unpack and authenticate an AES-256-GCM encrypted JSON envelope."""
+    if isinstance(envelope_data, bytes):
+        envelope_data = envelope_data.decode("utf-8")
+    doc = json.loads(envelope_data)
+    if doc.get("format") != "passwordvault-encrypted-json":
+        raise ValueError("Invalid format: expected 'passwordvault-encrypted-json'")
+    kdf_meta = doc.get("kdf", {})
+    cipher_meta = doc.get("cipher", {})
+    salt = bytes.fromhex(kdf_meta["salt"])
+    nonce = bytes.fromhex(cipher_meta["nonce"])
+    ciphertext = bytes.fromhex(cipher_meta["ciphertext"])
+    time_cost = int(kdf_meta.get("time_cost", ARGON2_TIME_COST))
+    memory_cost = int(kdf_meta.get("memory_cost", ARGON2_MEMORY_COST))
+    lanes = int(kdf_meta.get("lanes", ARGON2_PARALLELISM))
+    key = derive_argon2_key(
+        passphrase,
+        salt,
+        iterations=time_cost,
+        memory_cost=memory_cost,
+        lanes=lanes,
+    )
+    aad = b"PVJSON1:" + salt + nonce
+    try:
+        plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)
+    except Exception as e:
+        raise InvalidToken("decryption failed or invalid passphrase") from e
+    return json.loads(plaintext.decode("utf-8"))
+
+
+def validate_master_password_strength(password: str) -> Tuple[bool, str, float]:
+    """Validate master password meets enterprise security standards (length >= 10, unique chars >= 5, entropy >= 50 bits)."""
+    from vault.ui import calculate_entropy
+
+    if len(password) < 10:
+        return False, "Master password must be at least 10 characters long.", 0.0
+    if len(set(password)) < 5:
+        return False, "Master password contains too many repetitive characters.", 0.0
+    entropy, _ = calculate_entropy(password)
+    if entropy < 50.0:
+        return False, f"Master password entropy ({entropy:.1f} bits) is below recommended 50.0 bits.", entropy
+    return True, f"Master password acceptable ({entropy:.1f} bits entropy).", entropy
+

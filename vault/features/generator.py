@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import secrets
 import string
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Ambiguous characters often misread on screen or paper
 AMBIGUOUS_CHARS = "0O1lI|"
@@ -223,3 +223,38 @@ def generate_candidates(
         ent, crack_time = calculate_entropy(candidate)
         candidates.append((candidate, ent, crack_time))
     return candidates
+
+
+GENERATOR_PROFILES = {
+    "pin": {"type": "pin", "default_length": 6},
+    "alphanumeric": {"type": "password", "default_length": 20, "symbols": False},
+    "memorable": {"type": "passphrase", "words": 5, "sep": "-", "capitalize": True},
+    "max": {"type": "password", "default_length": 32, "symbols": True, "min_digits": 3, "min_symbols": 3},
+}
+
+
+def generate_with_profile(profile_name: str, length: Optional[int] = None) -> str:
+    """Generate credentials according to named preset security profiles."""
+    p = profile_name.strip().lower()
+    if p not in GENERATOR_PROFILES:
+        valid = ", ".join(GENERATOR_PROFILES.keys())
+        raise ValueError(f"Unknown generator profile '{profile_name}'. Valid profiles: {valid}")
+    cfg = GENERATOR_PROFILES[p]
+    if cfg["type"] == "pin":
+        pin_len = length or cfg["default_length"]
+        return "".join(secrets.choice(string.digits) for _ in range(pin_len))
+    elif cfg["type"] == "passphrase":
+        return generate_passphrase(
+            words=cfg["words"],
+            sep=cfg["sep"],
+            capitalize=cfg["capitalize"],
+        )
+    else:
+        pwd_len = length or cfg["default_length"]
+        return generate_random_password(
+            length=pwd_len,
+            symbols=cfg.get("symbols", True),
+            min_digits=cfg.get("min_digits", 1),
+            min_symbols=cfg.get("min_symbols", 1),
+        )
+

@@ -1,547 +1,268 @@
 # Secure Password Vault
 
-Secure Password Vault is a local-first command-line password manager written in
-Python. It stores passwords, API keys, notes, usernames, URLs, expiry dates,
-and optional environment-variable names in an encrypted local vault.
+Secure Password Vault is an enterprise-grade, local-first command-line password manager and secrets vault written in Python. It provides zero-knowledge, authenticated encryption for credentials, API keys, TOTP 2FA seeds, URLs, notes, and environment variables with zero external cloud dependencies.
 
-The project is designed for personal use and offline-first operation. It does
-not require an account, a hosted service, or a network connection to unlock
-your vault.
+All cryptographic operations occur entirely in local memory on your machine.
 
-> **Important:** This software has not undergone an independent security audit.
-> Use a strong master password, keep encrypted backups, and review the source
-> code before using it for highly sensitive data.
+---
 
-## Features
+## Key Features
 
-- Encrypted local storage with **Argon2id (RFC 9106)** and **AEAD AES-256-GCM** (with Scrypt/PBKDF2 compatibility).
-- Native suppression of Windows Clipboard History (Win+V) & Cloud Clipboard.
-- Interactive arrow-key navigation and live real-time search filtering.
-- Shannon entropy bit calculation and offline brute-force crack-time estimation.
-- Character composition breakdown badges ([len: 20] [upper: 4] [lower: 10] [digit: 3] [sym: 3]).
-- Clean box-framed credential cards with aligned borders and masked secrets.
-- Animated in-terminal copy countdown progress bar ([==========] 15s).
-- Interactive tag selector with autocompletion from existing vault tags.
-- Result pagination for browsing large vaults with keyboard navigation.
-- Side-by-side visual diff summarizing field modifications before saving.
-- Hierarchical breadcrumb navigation trails in submenus (Vault > Edit Entry > GitHub).
-- Contextual keyboard shortcut legend footer bar in interactive dialogs.
-- Compact single-line listing mode (vault list --compact).
-- Real-time search character highlighting for exact and fuzzy query matches.
-- Expanded terminal themes: Dark, Light, High-Contrast, Dracula, Nord, Solarized-Dark, and Mono.
-- Visual security health meter gauge (0-100%) with actionable grading.
-- Single-key quick action hotkeys in entry view ([c]opy, [u]sername, [o]pen url, [t]otp, [q]r, [e]dit, [d]elete).
-- One-click URL browser launcher (vault open NAME).
-- Safety-first confirmation dialogs with highlighted defaults.
-- Multi-candidate password and passphrase generator preview.
-- Raw and quiet scripting modes (vault get NAME --raw and --quiet).
-- Built-in TOTP 2FA authenticator (vault totp NAME).
-- Have I Been Pwned breach checks (vault pwned).
-- Printable Emergency Recovery Kit (vault emergency-kit).
-- Password history, custom fields, tags, and pinned favorites.
-- Multi-shell tab completion for PowerShell, Bash, Zsh, and Fish.
-- Bitwarden JSON and browser CSV imports with secure file shredding.
-- Cross-process file locking and automatic rolling snapshots.
-- Password and passphrase generation using Python's secrets module.
-- Duplicate-secret detection, API-key expiry warnings, and rotation reminders.
-- Search by entry name, username, notes, or typo-tolerant fuzzy matching.
-- Automatic locking after inactivity in the interactive menu.
-- Encrypted backups, exports, and a recoverable encrypted trash.
-- vault run for injecting selected secrets into a child process.
-- Standalone Windows executable builds with PyInstaller.
+- **Authenticated Cryptography**: Encrypted storage using Argon2id key derivation (RFC 9106, 64 MB memory cost) and authenticated AES-256-GCM AEAD encryption.
+- **Operating System Hardening**: Native Windows Clipboard History (Win+V) and Cloud Clipboard suppression; in-memory virtual locking to prevent paging sensitive buffers to disk.
+- **Quick Unlock**: Windows DPAPI integration with PBKDF2HMAC (100,000 iterations) PIN entropy for fast, secure terminal unlocking.
+- **Two-Factor Authentication**: Built-in RFC 6238 TOTP authenticator with live countdowns and terminal ASCII QR code generation.
+- **Breach Detection**: Native k-anonymity Have I Been Pwned API checks without transmitting credentials.
+- **Disaster Recovery**: Automated rolling snapshots, encrypted backup verification, automatic backup pruning, and printable Emergency Recovery Kits.
+- **Advanced Generation**: Cryptographic password generator with preset security profiles (pin, alphanumeric, memorable, max) and EFF wordlist passphrases.
+- **Security Auditing**: Shannon entropy calculator, brute-force crack time estimator, password similarity and pattern-reuse detection, and granular health scoring.
+- **Broad Interoperability**: Support for authenticated Encrypted JSON Envelopes, Bitwarden JSON, 1Password / LastPass / browser CSV, and `.env` exports.
+- **Process Orchestration**: Safe secrets injection via `vault run` without storing plaintext secrets in shell history.
+- **Multi-Shell Completion**: Native tab completion for PowerShell, Bash, Zsh, and Fish.
 
-## Security model
+---
 
-### Encryption
+## Architecture and Security Model
 
-New vaults use:
+| Component | Specification |
+| --- | --- |
+| Primary KDF | Argon2id (RFC 9106, 3 iterations, 64 MB RAM, 4 lanes, 16-byte CSPRNG salt) |
+| Container Cipher | AES-256-GCM (12-byte CSPRNG nonce, authenticated additional data) |
+| Legacy Compatibility | Scrypt (N=2^17, r=8, p=1) with AES-128-CBC + HMAC-SHA256 (Fernet) |
+| PIN Quick Unlock | Windows DPAPI encrypted session key with PBKDF2HMAC (SHA-256, 100k rounds) |
+| Memory Security | In-memory recursive zeroization (`wipe_memory`), `VirtualLock` / `mlock` page locking |
+| Concurrency Control | Cross-process advisory file locking with timeout protection |
+| Storage Integrity | Tamper-evident container magic headers with pre-decryption integrity verification |
 
-1. A random 16-byte salt.
-2. Scrypt for deriving a key from the master password.
-3. Fernet authenticated encryption for the vault payload.
-
-Fernet provides confidentiality and tamper detection using AES-128-CBC and
-HMAC-SHA256. The Scrypt parameters are stored in the vault header so the file
-can be opened with the parameters that were used to create it.
-
-Older vaults created with the legacy PBKDF2 format are upgraded to Scrypt after
-successful unlock. The migration keeps safety copies until you confirm that
-the upgraded vault works.
-
-### Master password
-
-The master password is not stored anywhere and cannot be recovered or reset.
-If it is lost, encrypted vault data and backups cannot be decrypted.
-
-Use a long, unique passphrase rather than reusing a password from another
-service. A password manager should not share its master password with any
-other account.
-
-### Clipboard and screen display
-
-Copied secrets are cleared automatically when possible. Clipboard behavior
-depends on the operating system and installed clipboard tools, so avoid
-assuming that a secret is immediately removed on every desktop environment.
-
-The `--show` option displays a secret temporarily. Anyone who can see the
-terminal or screen may be able to read it during that interval.
-
-### `vault run` warning
-
-`vault run` passes secrets as environment variables to a child process. This is
-convenient for local development, but environment variables may be exposed
-through:
-
-- Child processes.
-- Debuggers and process-inspection tools.
-- Crash reports.
-- Application logs.
-- CI/CD diagnostics.
-
-Use it only with trusted commands and trusted environments. Do not print the
-environment from a command started with `vault run`.
-
-## Requirements
-
-- Python 3.10 or newer.
-- `cryptography`.
-- `pyperclip` for the preferred clipboard integration.
-- Windows, macOS, or Linux.
-
-On Windows, the built-in `clip.exe` fallback may work even when `pyperclip` is
-not available.
+---
 
 ## Installation
 
-### Install from the repository
+### Prerequisites
 
-From the project directory:
+- Python 3.10 or newer
+- Windows, macOS, or Linux
+
+### Install Dependencies
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-Run the application:
+### Install Launcher (Windows)
 
-```powershell
-python vault.py
-```
-
-On Windows, you can also run:
+Place the project directory or a shortcut to `vault.bat` on your system `PATH`.
 
 ```powershell
 vault.bat
 ```
 
-To use `vault` from any directory, place the project directory or a shortcut
-to `vault.bat` on your `PATH`.
+### Build Standalone Executable
 
-### Build the Windows executable
-
-Install the development and build dependencies:
+To compile a standalone zero-dependency binary using PyInstaller:
 
 ```powershell
 python -m pip install -r requirements-dev.txt
-```
-
-Build:
-
-```powershell
 build_exe.bat
 ```
 
-The executable is written to:
+The resulting executable is generated at `dist/vault.exe`.
 
-```text
-dist\vault.exe
-```
+---
 
-The build uses [`vault.spec`](vault.spec). Generated `build/` and `dist/`
-directories are ignored by Git.
+## Quick Start
 
-## First run
+### 1. Initialize Vault
 
-Start the vault without arguments:
-
-```powershell
-python vault.py
-```
-
-On the first run, the application:
-
-1. Creates the local application directory.
-2. Asks for a display name.
-3. Asks you to create and confirm a master password.
-4. Creates an encrypted empty vault.
-
-The master password is required for every future unlock. There is no recovery
-mechanism that bypasses encryption.
-
-## Command reference
-
-### Open the interactive menu
+Run the vault without arguments to create your encrypted storage:
 
 ```text
 vault
 ```
 
-The menu supports adding passwords and API keys, importing CSV files, finding
-and copying secrets, editing entries, deleting entries to trash, checking
-vault health, managing backups, changing the master password, and configuring
-timeouts.
+The setup assistant prompts for:
+1. Your display name (used for Emergency Recovery Kits).
+2. A strong master password (validated for minimum entropy and length).
 
-### Look up and copy a secret
-
-```text
-vault get NAME
-vault NAME
-```
-
-Names may be partial or misspelled. If multiple entries match, the application
-shows a selection list.
-
-Show a secret temporarily instead of copying it:
-
-```text
-vault get NAME --show
-vault NAME --show
-`
-
-Print only the raw secret value for scripts and pipelines without extra text:
-
-`	ext
-vault get NAME --raw
-vault get NAME --quiet
-```
-
-### List names without secrets
-
-```text
-vault list
-vault list --compact
-vault list --json
-```
-
-The JSON form prints an array containing entry names only. Secret values,
-usernames, notes, and API keys are not included.
-
-### Open service login URL in browser
-
-`	ext
-vault open NAME
-`
-
-Launches the configured website or login URL directly in your system's default browser.
-
-### Generate a password
-
-```text
-vault gen
-vault gen --length 24
-vault gen --length 32 --no-symbols
-vault gen --length 24 --show
-```
-
-Generated passwords are copied to the clipboard by default and are cleared
-automatically when possible. Use `--show` to print the generated value instead.
-
-### Generate a passphrase
-
-```text
-vault gen --words 6
-vault gen --words 8 --sep " "
-vault gen --words 6 --show
-```
-
-Passphrase generation uses a built-in word list and does not require unlocking
-the vault.
-
-### Edit an entry
-
-```text
-vault edit
-vault edit GitHub
-```
-
-The interactive editor can update usernames, URLs, notes, environment-variable
-names, expiry dates, passwords, API keys, and entry names.
-
-### Delete and restore entries
-
-Interactive deletion is available from the main menu. For scripting:
-
-```text
-vault delete GitHub --yes
-```
-
-Deleted entries are moved to encrypted trash rather than immediately removed.
-They are retained for the configured trash period and can be restored:
-
-```text
-vault restore
-vault restore GitHub
-vault restore --empty
-```
-
-Use `--empty` only when you are certain that no deleted entries are needed.
-
-### Create encrypted backups
-
-Create a backup without overwriting an existing file:
-
-```text
-vault backup --output C:\Backups\vault-backup.enc
-```
-
-Backups contain encrypted vault data and still require the master password.
-Store backups separately from the computer that contains the original vault.
-Use more than one backup location if the data is important.
-
-The interactive menu also provides backup, restore, and export options.
-
-### Encrypted export
-
-```text
-vault export
-vault export C:\Backups\vault-export.pvex
-```
-
-Exports are encrypted and can be restored through the backup/restore workflow.
-Treat export files as sensitive because anyone who obtains the file and the
-master password can decrypt it.
-
-### Import a CSV file
-
-```text
-vault import passwords.csv
-vault import passwords.csv --on-conflict skip
-vault import passwords.csv --on-conflict rename
-vault import passwords.csv --on-conflict overwrite
-```
-
-The importer recognizes common column names for:
-
-- Entry name or title.
-- URL or login URI.
-- Username or email.
-- Password.
-- Notes.
-
-Supported sources include common Chrome, Edge, Firefox, and Bitwarden-style
-CSV exports. CSV files contain plaintext passwords. After confirming that the
-import succeeded, securely delete the source export and empty the recycle bin
-or trash.
-
-### Run a command with secrets
-
-```text
-vault run GitHub -- python deploy.py
-vault run OpenAI=TAVILY_KEY -- python app.py
-```
-
-The first form derives an environment variable name from the entry name. The
-second form explicitly chooses the environment variable name. Entry-specific
-environment names configured in the vault take precedence when present.
-
-### Configure timeouts and theme
-
-```text
-vault config
-vault --theme dark
-vault --theme light
-vault --theme contrast
-vault --theme dracula
-vault --theme nord
-vault --theme solarized-dark
-vault --theme mono
-```
-
-Configuration includes clipboard timeout, temporary display duration, automatic
-lock timeout, and terminal theme.
-
-### Diagnose the setup
-
-```text
-vault doctor
-vault doctor --deep
-vault doctor --json
-```
-
-The diagnostic command checks the vault format, leftover migration files,
-failed unlock attempts, backup age, clipboard support, and local setup.
-`--deep` unlocks the vault and checks weak or reused secrets, expired API keys,
-and rotation reminders. `--json` provides a machine-readable summary without
-printing secret values.
-
-### PowerShell completion
-
-Print the completion script:
+### 2. Basic Operations
 
 ```powershell
-vault completion powershell
+# Add credentials interactively
+vault
+
+# Retrieve password to clipboard (auto-cleared after 15 seconds)
+vault get GitHub
+
+# Display password temporarily on screen
+vault get GitHub --show
+
+# Search credentials by domain or URL
+vault get --url github.com
+
+# Open stored login URL in default browser
+vault open GitHub
+
+# Generate live TOTP 2FA code
+vault totp GitHub
 ```
 
-Enable completion:
+---
 
-```powershell
-vault completion enable
-```
+## Command Reference
 
-Completion stores entry names, not secret values, in a plaintext names index.
-This still reveals the names of services you use, so enable it only if that
-metadata exposure is acceptable.
+### Credential Lookup and Inspection
 
-## Data location and files
-
-The application stores data in:
-
-```text
-Windows: %USERPROFILE%\.local_password_vault
-Unix:    ~/.local_password_vault
-```
-
-Common files include:
-
-| File | Purpose |
+| Command | Description |
 | --- | --- |
-| `vault.enc` | Main encrypted vault |
-| `trash.enc` | Encrypted deleted-entry storage |
-| `config.json` | Theme, timeout, display, and backup metadata |
-| `attempts.json` | Failed unlock-attempt tracking |
-| `names.txt` | Optional plaintext completion index |
-| `*.bak` / `*.v1.bak` | Migration or password-change safety copies |
+| `vault get <name>` | Copy secret to clipboard with automated clearing |
+| `vault get <name> --show` | Display secret in terminal with countdown masking |
+| `vault get <name> --totp` | Display live TOTP 2FA code with remaining validity |
+| `vault get <name> --qr` | Display secret as ASCII QR code in terminal |
+| `vault get <name> --raw` | Print raw secret only to stdout (for scripting and pipes) |
+| `vault get --url <domain>` | Search credentials matching URL or hostname |
+| `vault open <name>` | Launch service login URL in default web browser |
+| `vault notes <name>` | View or update entry notes (`--set "text"`) |
 
-Do not share the application directory publicly. In particular, do not upload
-the encrypted vault, backups, or completion index to a public repository.
+### Vault Listing and Filtering
 
-## Backup and recovery recommendations
+| Command | Description |
+| --- | --- |
+| `vault list` | List all entry names in alphabetical order |
+| `vault list --compact` | Single-line dense view with usernames and tags |
+| `vault list --fav` | Filter entries flagged as favorites |
+| `vault list --tag <tags>` | Filter entries matching comma-separated tags |
+| `vault list --expiring-soon [days]` | Filter credentials expiring within N days (default: 14) |
+| `vault list --json` | Output entry names as a JSON array |
 
-Use the following routine:
+### Password Generation
 
-1. Create the vault with a strong, unique master passphrase.
-2. Create an encrypted backup after major changes.
-3. Store a backup on a separate disk or trusted private storage location.
-4. Periodically test restoring a backup.
-5. Keep the master password separate from the backup file.
-6. Delete old migration copies after confirming that the current vault works.
-7. Run `vault doctor` regularly.
+| Command | Description |
+| --- | --- |
+| `vault gen` | Generate 20-character high-entropy password |
+| `vault gen --length <n>` | Generate custom length password (e.g. `--length 32`) |
+| `vault gen --profile <type>` | Generate via preset profile: `pin`, `alphanumeric`, `memorable`, `max` |
+| `vault gen --words <n>` | Generate EFF wordlist passphrase (e.g. `--words 5 --sep "-"`) |
+| `vault gen --show` | Print generated secret to stdout instead of copying |
 
-An encrypted backup is not a substitute for a strong master password. If both
-the backup and master password are lost, the data cannot be recovered.
+### Entry Management
 
-## Development
+| Command | Description |
+| --- | --- |
+| `vault edit [name]` | Interactively edit entry fields with diff review |
+| `vault clone <src> <dest>` | Duplicate credential entry preserving metadata |
+| `vault rename <old> <new>` | Rename an entry atomically across all indices |
+| `vault fav <name>` | Toggle favorite status of an entry |
+| `vault tag add <tag> <entries...>` | Bulk assign a tag to multiple entries |
+| `vault tag remove <tag> <entries...>` | Bulk remove a tag from entries |
+| `vault tag list` | List all unique tags used across the vault |
+| `vault delete <name> [--yes]` | Move credential to encrypted trash |
+| `vault restore [name]` | Restore entry from encrypted trash |
 
-Install development dependencies:
+### Security, Audits, and Diagnostics
 
-```powershell
-python -m pip install -r requirements-dev.txt
+| Command | Description |
+| --- | --- |
+| `vault doctor [--deep] [--json]` | Validate vault integrity, permissions, backups, and security hygiene |
+| `vault audit` | Overall vault security score (0-100%) |
+| `vault audit --entropy` | Rank all credentials by Shannon entropy (weakest first) |
+| `vault audit --similar` | Detect pattern-based password variations and shared roots |
+| `vault audit --breakdown` | Itemized point deduction report and security grade |
+| `vault stats [--json]` | Vault composition metrics, 2FA coverage, and tag counts |
+| `vault pwned [name]` | Audit passwords against Have I Been Pwned k-anonymity API |
+| `vault clip --clear` | Immediately overwrite and zero out system clipboard |
+
+### Backups, Snapshots, and Disaster Recovery
+
+| Command | Description |
+| --- | --- |
+| `vault backup [--output <path>]` | Create encrypted vault backup archive |
+| `vault backup --verify <path>` | Verify decryptability and schema integrity of a backup file |
+| `vault backup --prune [n]` | Prune oldest backups exceeding retention count (default: 10) |
+| `vault snapshot --list` | List timestamped rolling snapshots created before writes |
+| `vault snapshot --restore <path>` | Restore snapshot with automated pre-restore safety copy |
+| `vault emergency-kit` | Generate printable Emergency Recovery Sheet |
+
+### Import and Export
+
+| Command | Description |
+| --- | --- |
+| `vault export [--output <path>]` | Export encrypted archive (`.pvex`) |
+| `vault export --format encrypted-json` | Export authenticated AES-256-GCM encrypted JSON envelope |
+| `vault export --format csv [--delimiter ,]` | Export vault entries to customizable CSV |
+| `vault export --format env` | Export credentials to local `.env` configuration file |
+| `vault import <file>` | Import from Bitwarden JSON or browser CSV |
+| `vault import <file> --format encrypted-json` | Import authenticated encrypted JSON envelope |
+
+### Automation and Process Injection
+
+| Command | Description |
+| --- | --- |
+| `vault run KEY1 [KEY2...] -- <command>` | Inject decrypted secrets as environment variables into process |
+| `vault completion <shell>` | Generate shell completion (`powershell`, `bash`, `zsh`, `fish`) |
+| `vault config` | Configure terminal themes, clipboard delays, and auto-lock timers |
+
+---
+
+## Non-Interactive Automation
+
+For automated headless environments, CI/CD runners, and background services, Password Vault supports non-interactive master password injection without requiring terminal prompts:
+
+1. **Environment Variable**: Set `VAULT_MASTER_PASSWORD`:
+   ```bash
+   export VAULT_MASTER_PASSWORD="YourMasterPassword"
+   vault get DatabasePassword --raw
+   ```
+2. **Password File**: Set `VAULT_PASSWORD_FILE` pointing to a restricted file:
+   ```bash
+   export VAULT_PASSWORD_FILE="/etc/secrets/vault.key"
+   vault get AWSAccessKey --raw
+   ```
+3. **File Descriptor**: Pass file descriptor via `--password-fd`:
+   ```bash
+   vault get DB_PASSWORD --password-fd 3 3< /run/secrets/pwd
+   ```
+
+---
+
+## File System and Storage Layout
+
+Vault files are stored in a dedicated local directory with restricted user-only permissions:
+
+- **Windows**: `%USERPROFILE%\.local_password_vault` (hardened via NTFS DACLs / `icacls`)
+- **macOS / Linux**: `~/.local_password_vault` (permissions set to `0700`)
+
+```text
+~/.local_password_vault/
+|-- vault.enc             # Primary authenticated AES-256-GCM vault container
+|-- trash.enc             # Encrypted deleted credentials container
+|-- config.json           # User preferences (theme, timeouts, security policies)
+|-- attempts.json         # HMAC-signed authentication attempt tracking (anti-bruteforce)
+|-- quick_unlock.dat      # DPAPI-protected session token (Windows only)
+|-- names.txt             # Plaintext index of entry names (optional tab-completion)
+\-- snapshots/            # Timestamped pre-write rolling snapshots (*.snap)
 ```
 
-Run the full test suite:
+---
+
+## Testing and Quality Assurance
+
+The repository includes a comprehensive automated test suite covering cryptographic derivation, AEAD encryption, tamper detection, CLI commands, importers, exporters, and UI rendering:
 
 ```powershell
+# Run full automated test suite (85 tests)
 python -m pytest
+
+# Run linting and style validation
+python -m ruff check .
 ```
 
-The tests cover password generation, searching, duplicate detection, entry
-helpers, encryption round trips, wrong passwords, schema validation, exports,
-corrupt trash data, CSV imports, JSON output, and scripted deletion.
+---
 
-Compile the Python sources:
+## Security Policy
 
-```powershell
-python -m py_compile vault.py tests\test_vault.py
-```
+Security issues may be reported privately through GitHub Private Vulnerability Reporting or via the guidelines outlined in [SECURITY.md](SECURITY.md).
 
-Build the executable:
-
-```powershell
-python -m PyInstaller --noconfirm --clean vault.spec
-```
-
-## Project layout
-
-```text
-.
-|-- vault.py              # CLI application
-|-- vault.bat             # Windows launcher
-|-- vault.spec            # PyInstaller configuration
-|-- build_exe.bat         # Windows build helper
-|-- requirements.txt      # Runtime dependencies
-|-- requirements-dev.txt  # Test and build dependencies
-|-- pyproject.toml        # Project metadata and pytest settings
-\-- tests/
-    \-- test_vault.py     # Automated tests
-```
-
-## Troubleshooting
-
-### Python is not found
-
-Install Python 3.10 or newer and ensure it is available on `PATH`. On Windows,
-verify with:
-
-```powershell
-python --version
-```
-
-### Clipboard is unavailable
-
-Install the runtime dependencies again:
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-On Windows, the application may fall back to `clip.exe`. The `--show` option
-is available when clipboard integration is not usable.
-
-### The vault cannot be unlocked
-
-Verify that you are using the correct master password. Check the data directory
-and run:
-
-```text
-vault doctor
-```
-
-There is no password-reset procedure. If the vault file is damaged, restore
-from an encrypted backup.
-
-### An old-format vault asks for `salt.key`
-
-Legacy vaults need their original salt file for migration. Restore the
-corresponding `salt.key` from a trusted backup, then unlock the vault once.
-Do not delete migration safety copies until the upgraded vault has been tested.
-
-### A CSV import contains plaintext credentials
-
-This is expected for browser exports. Complete the import, verify the entries,
-then securely delete the CSV file and empty the recycle bin or trash.
-
-## Limitations
-
-- There is no account recovery or master-password reset.
-- Clipboard clearing depends on operating-system clipboard behavior.
-- Terminal display mode cannot protect against screen capture or shoulder
-  surfing.
-- Environment variables used by `vault run` may be observable by trusted or
-  privileged processes.
-- The application does not synchronize vaults between devices.
-- The project has not been independently security audited.
-
-## Security Overview and Vulnerability Reporting
-
-This repository enforces proactive security practices and rigorous hardening:
-
-- Security Policy: Review [SECURITY.md](SECURITY.md) for disclosure guidelines.
-- Private Vulnerability Reporting: Enabled to privately report vulnerabilities.
-- Dependabot Alerts and Security Updates: Enabled for automated dependency tracking.
-- Secret Scanning: Enabled with push protection to prevent secret leakage.
-- Code Scanning: Enabled with GitHub CodeQL; all security alerts are continuously remediated.
-- Cryptographic Hardening: Ephemeral HMAC-SHA256 tokens for clipboard synchronization and PBKDF2HMAC key derivation (100,000 iterations) for quick-unlock PIN entropy.
-- Least-Privilege CI/CD: Explicit read-only GITHUB_TOKEN permissions defined across all GitHub Actions workflows and jobs.
-- Branch Protection: Enforced on the main branch to protect history and stability.
+---
 
 ## License
 

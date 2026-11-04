@@ -149,6 +149,14 @@ def clear_clipboard_if_ours() -> None:
         pass
 
 
+def clear_clipboard_now() -> bool:
+    """Immediately zero out and clear the system clipboard without waiting for a timer."""
+    global _last_copied_digest
+    _last_copied_digest = None
+    return _clipboard_copy("")
+
+
+
 atexit.register(clear_clipboard_if_ours)
 
 

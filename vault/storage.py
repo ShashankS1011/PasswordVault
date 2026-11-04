@@ -18,6 +18,7 @@ from vault.constants import (
     APP_DIR,
     ATTEMPTS_FILE,
     CONFIG_FILE,
+    DEFAULT_BACKUP_RETENTION,
     NAMES_FILE,
     SNAPSHOTS_DIR,
     TRASH_DAYS,
@@ -119,18 +120,23 @@ def secure_write(path: Path, data: bytes) -> None:
 # ---------------------------------------------------------------------------
 # Rolling Snapshots (Improvement #19)
 # ---------------------------------------------------------------------------
-def take_snapshot(file_path: Path, max_snapshots: int = 5) -> Optional[Path]:
+def take_snapshot(
+    file_path: Path,
+    max_snapshots: int = 5,
+    snapshots_dir: Optional[Path] = None,
+) -> Optional[Path]:
     """Create an automatic timestamped snapshot before write operations."""
     if not file_path.exists():
         return None
     try:
-        SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        target_dir = snapshots_dir or SNAPSHOTS_DIR
+        target_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-        snap_path = SNAPSHOTS_DIR / f"{file_path.stem}_{timestamp}.snap"
+        snap_path = target_dir / f"{file_path.stem}_{timestamp}.snap"
         shutil.copy2(file_path, snap_path)
 
         # Retain only the most recent snapshots
-        existing = sorted(SNAPSHOTS_DIR.glob(f"{file_path.stem}_*.snap"), key=os.path.getmtime)
+        existing = sorted(target_dir.glob(f"{file_path.stem}_*.snap"), key=os.path.getmtime)
         if len(existing) > max_snapshots:
             for old in existing[:-max_snapshots]:
                 try:
@@ -382,3 +388,87 @@ def restore_from_trash(vault: Dict[str, Any], session: Any, name: Optional[str] 
             save_vault(session, vault)
         return True
     return False
+
+
+def canonicalize_path(path: Path | str) -> Path:
+    """Resolve cross-platform path safely handling tildes, env vars, and symlinks."""
+    raw = os.path.expandvars(os.path.expanduser(str(path)))
+    resolved = Path(raw).resolve()
+    return resolved
+
+
+def verify_backup(backup_path: Path, master_password: str) -> Tuple[bool, str, int]:
+    """Verify an encrypted backup file without modifying the active vault state."""
+    from vault.crypto import decrypt_any_backup, verify_vault_integrity
+    from vault.models import validate_vault_data
+
+    path = canonicalize_path(backup_path)
+    if not path.is_file():
+        return False, f"Backup file not found: {path}", 0
+    try:
+        data = path.read_bytes()
+        valid, msg = verify_vault_integrity(data)
+        if not valid:
+            return False, f"Integrity check failed: {msg}", 0
+        decrypted = decrypt_any_backup(data, master_password)
+        validated = validate_vault_data(decrypted)
+        return True, "Backup successfully verified and decrypted", len(validated)
+    except Exception as exc:
+        return False, f"Backup verification failed: {exc}", 0
+
+
+def prune_backups(
+    backup_dir: Path,
+    max_backups: int = DEFAULT_BACKUP_RETENTION,
+    pattern: str = "*.enc",
+) -> List[Path]:
+    """Prune oldest backups exceeding the retention threshold, returning removed paths."""
+    dir_path = canonicalize_path(backup_dir)
+    if not dir_path.is_dir():
+        return []
+    files = sorted(dir_path.glob(pattern), key=lambda p: p.stat().st_mtime)
+    removed: List[Path] = []
+    if len(files) > max_backups:
+        to_delete = files[:-max_backups]
+        for f in to_delete:
+            try:
+                f.unlink()
+                removed.append(f)
+            except OSError:
+                pass
+    return removed
+
+
+def list_snapshots(snapshots_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """List available rolling snapshot backups sorted chronologically."""
+    target_dir = snapshots_dir or SNAPSHOTS_DIR
+    if not target_dir.is_dir():
+        return []
+    snaps = sorted(target_dir.glob("*.snap"), key=lambda p: p.stat().st_mtime, reverse=True)
+    results: List[Dict[str, Any]] = []
+    for s in snaps:
+        stat = s.stat()
+        results.append({
+            "name": s.name,
+            "path": s,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+        })
+    return results
+
+
+def restore_snapshot(snapshot_path: Path, vault_path: Optional[Path] = None) -> Path:
+    """Restore an automatic snapshot to vault file with pre-restore safety copy."""
+    target_vault = vault_path or _vault_path()
+    source_snap = canonicalize_path(snapshot_path)
+    if not source_snap.is_file():
+        raise FileNotFoundError(f"Snapshot not found: {source_snap}")
+
+    # Take safety copy of current vault if present
+    if target_vault.is_file():
+        safety_path = target_vault.with_suffix(f".pre_restore_{int(time.time())}.bak")
+        shutil.copy2(target_vault, safety_path)
+
+    shutil.copy2(source_snap, target_vault)
+    return target_vault
+

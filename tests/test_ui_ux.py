@@ -200,7 +200,7 @@ def test_render_credential_card(capsys):
     assert "MyService" in out
     assert "alice@example.com" in out
     assert "•••••••••••••••••" in out
-    assert "service.com" in out
+    assert entry["url"] in out
 
 
 def test_cmd_get_raw_and_quiet(monkeypatch, capsys):

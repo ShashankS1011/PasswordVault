@@ -6,7 +6,7 @@ import os
 import re
 from pathlib import Path
 
-VERSION = "3.4.0"
+VERSION = "3.5.0"
 CREATOR_NAME = "Shashank"
 
 DEFAULT_CLIPBOARD_TIMEOUT = 15
@@ -19,6 +19,8 @@ ROTATE_AFTER_DAYS = 180
 TRASH_DAYS = 30
 BACKUP_STALE_DAYS = 30
 FUZZY_CUTOFF = 0.55
+MAX_ENTRY_HISTORY = 10
+DEFAULT_BACKUP_RETENTION = 10
 
 # Cryptographic parameters
 ARGON2_TIME_COST = 3

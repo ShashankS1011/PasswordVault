@@ -2,11 +2,11 @@
 """Vault entry models, schema validation, and version migration."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from vault.constants import ENV_NAME_RE, VAULT_SCHEMA_VERSION
+from vault.constants import ENV_NAME_RE, MAX_ENTRY_HISTORY, VAULT_SCHEMA_VERSION
 
 
 def hostname_of(url: str) -> str:
@@ -99,6 +99,26 @@ def entry_custom_fields(entry: Dict[str, Any] | str) -> Dict[str, str]:
         if isinstance(fields, dict):
             return {str(k): str(v) for k, v in fields.items()}
     return {}
+
+
+def prune_entry_history(entry: Dict[str, Any], max_history: int = MAX_ENTRY_HISTORY) -> int:
+    """Trim entry password history revisions to avoid unbounded size, returning removed count."""
+    if not isinstance(entry, dict) or "history" not in entry or not isinstance(entry["history"], list):
+        return 0
+    hist = entry["history"]
+    if len(hist) > max_history:
+        removed = len(hist) - max_history
+        entry["history"] = hist[-max_history:]
+        return removed
+    return 0
+
+
+def set_expiry_relative(entry: Dict[str, Any], days: int = 90) -> str:
+    """Set entry expiration date to relative offset from today in YYYY-MM-DD format."""
+    target_date = date.today() + timedelta(days=days)
+    val = target_date.isoformat()
+    entry["expires"] = val
+    return val
 
 
 def validate_entry(entry: Any, name: str = "entry") -> Dict[str, Any]:

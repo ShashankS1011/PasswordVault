@@ -12,12 +12,13 @@ from vault.models import validate_entry
 from vault.storage import shred_file
 
 CSV_ALIASES = {
-    "name": ("name", "title", "login_name"),
-    "url": ("url", "login_uri", "website", "web site", "origin"),
-    "username": ("username", "login_username", "user", "login", "email"),
-    "password": ("password", "login_password", "pass"),
-    "notes": ("notes", "note", "comment"),
-    "totp": ("totp", "otp", "2fa", "authenticator"),
+    "name": ("name", "title", "login_name", "item_name", "account"),
+    "url": ("url", "login_uri", "website", "web site", "origin", "webpage"),
+    "username": ("username", "login_username", "user", "login", "email", "user_name"),
+    "password": ("password", "login_password", "pass", "secret", "code"),
+    "notes": ("notes", "note", "comment", "comments", "extra", "description"),
+    "totp": ("totp", "otp", "2fa", "authenticator", "one-time password"),
+    "tags": ("tags", "group", "grouping", "folder", "category"),
 }
 
 
@@ -168,3 +169,38 @@ def import_bitwarden_json(
     if auto_shred:
         shred_file(json_path)
     return added, skipped
+
+
+def import_encrypted_json(
+    vault: Dict[str, Any],
+    session: Any,
+    file_path: Path,
+    passphrase: str,
+    on_conflict: str = "rename",
+) -> Tuple[int, int]:
+    """Import credentials from an authenticated AES-256-GCM encrypted JSON envelope."""
+    from vault.crypto import save_vault, unpack_encrypted_json
+    from vault.models import validate_entry
+
+    if not file_path.is_file():
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    content = file_path.read_text(encoding="utf-8")
+    payload = unpack_encrypted_json(content, passphrase)
+    entries = payload.get("entries", payload)
+
+    added = 0
+    skipped = 0
+    for name, entry in entries.items():
+        if name in vault:
+            if on_conflict == "skip":
+                skipped += 1
+                continue
+            elif on_conflict == "rename":
+                name = _pick_conflict_name(name, vault)
+        vault[name] = validate_entry(entry, name)
+        added += 1
+
+    save_vault(session, vault)
+    return added, skipped
+

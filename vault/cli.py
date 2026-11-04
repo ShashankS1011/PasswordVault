@@ -13,10 +13,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from vault.clipboard import (
+    clear_clipboard_now,
     clipboard_cleaner_main,
     copy_with_autoclear,
 )
 from vault.constants import (
+    APP_DIR,
     DEFAULT_AUTO_LOCK_SECONDS,
     DEFAULT_CLIPBOARD_TIMEOUT,
     DEFAULT_SHOW_SECONDS,
@@ -35,30 +37,47 @@ from vault.crypto import (
     save_vault,
     try_quick_unlock,
 )
-from vault.exporters import export_dotenv, export_vault, to_env_name
+from vault.exporters import (
+    export_csv,
+    export_dotenv,
+    export_encrypted_json,
+    export_vault,
+    to_env_name,
+)
 from vault.features.emergency import generate_emergency_kit
 from vault.features.generator import (
     generate_candidates,
     generate_passphrase,
     generate_random_password,
+    generate_with_profile,
 )
 from vault.features.health import (
+    calculate_entropy_audit,
     calculate_health_score,
+    calculate_health_score_breakdown,
     collect_health,
+    collect_vault_stats,
     find_matches,
+    find_similar_passwords,
 )
 from vault.features.pwned import audit_vault_breaches, check_password_breach
 from vault.features.totp import display_totp_live
-from vault.importers import import_bitwarden_json, import_csv
+from vault.importers import (
+    import_bitwarden_json,
+    import_csv,
+    import_encrypted_json,
+)
 from vault.integrations import (
     get_completion_script,
     handle_git_credential,
     run_native_messaging_host,
 )
 from vault.models import (
+    days_until_expiry,
     entry_is_favorite,
     entry_secret,
     entry_totp,
+    hostname_of,
     validate_entry,
 )
 from vault.storage import (
@@ -66,13 +85,17 @@ from vault.storage import (
     clear_failures,
     empty_trash,
     file_lock,
+    list_snapshots,
     load_config,
     load_trash,
+    prune_backups,
     record_failure,
     restore_from_trash,
+    restore_snapshot,
     save_config,
     save_trash,
     trash_add,
+    verify_backup,
 )
 from vault.ui import (
     ACCENT,
@@ -138,11 +161,20 @@ CLIPBOARD_TIMEOUT, SHOW_SECONDS, AUTO_LOCK_SECONDS = _load_timeouts()
 # Master Password Prompting & Authentication (Improvement #26 & #21)
 # ---------------------------------------------------------------------------
 def get_master_password(args: Optional[argparse.Namespace] = None) -> Optional[str]:
-    """Retrieve master password from environment, stdin pipe, or interactive prompt."""
+    """Retrieve master password from environment, password file, stdin pipe, or interactive prompt."""
     # 1. Environment variable
     env_var = os.environ.get("VAULT_MASTER_PASSWORD")
     if env_var:
         return env_var
+
+    # 1b. Password file from environment
+    file_path = os.environ.get("VAULT_PASSWORD_FILE")
+    if file_path:
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.readline().rstrip("\r\n")
+        except Exception:
+            pass
 
     # 2. Argument password-env
     if args and getattr(args, "password_env", None):
@@ -1046,6 +1078,7 @@ def build_parser() -> argparse.ArgumentParser:
     # get
     p_get = subparsers.add_parser("get", help="Retrieve credentials")
     p_get.add_argument("name", nargs="?", default="", help="Entry name to lookup")
+    p_get.add_argument("--url", type=str, help="Search credentials matching URL or domain")
     p_get.add_argument("--show", action="store_true", help="Display secret briefly on screen")
     p_get.add_argument("--totp", action="store_true", help="Display live TOTP 2FA code")
     p_get.add_argument("--qr", action="store_true", help="Display secret as terminal QR code")
@@ -1055,8 +1088,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # list
     p_list = subparsers.add_parser("list", help="List all entry names")
-    p_list.add_argument("--tag", type=str, help="Filter entries by tag")
+    p_list.add_argument("--tag", type=str, help="Filter entries by tag(s)")
     p_list.add_argument("--fav", action="store_true", help="Show favorites only")
+    p_list.add_argument("--expiring-soon", type=int, nargs="?", const=14, help="Show credentials expiring within N days")
     p_list.add_argument("--json", action="store_true", help="Output names in JSON array")
     p_list.add_argument("--compact", "-c", action="store_true", help="Display dense single-line listing")
 
@@ -1067,6 +1101,7 @@ def build_parser() -> argparse.ArgumentParser:
     # gen
     p_gen = subparsers.add_parser("gen", help="Generate passwords or passphrases")
     p_gen.add_argument("--length", type=int, default=20, help="Password length")
+    p_gen.add_argument("--profile", choices=["pin", "alphanumeric", "memorable", "max"], help="Preset security profile")
     p_gen.add_argument("--words", type=int, default=0, help="Passphrase word count (uses EFF list)")
     p_gen.add_argument("--sep", type=str, default="-", help="Passphrase separator")
     p_gen.add_argument("--no-symbols", action="store_true", help="Omit symbols from password")
@@ -1087,6 +1122,67 @@ def build_parser() -> argparse.ArgumentParser:
     # backup
     p_bak = subparsers.add_parser("backup", help="Create encrypted vault backup")
     p_bak.add_argument("--output", type=Path, help="Target destination path")
+    p_bak.add_argument("--verify", type=Path, help="Verify integrity of an encrypted backup file")
+    p_bak.add_argument("--prune", type=int, nargs="?", const=10, help="Prune older backups exceeding retention count")
+
+    # snapshot
+    p_snap = subparsers.add_parser("snapshot", help="Manage rolling vault snapshots")
+    p_snap.add_argument("--list", action="store_true", help="List available snapshots")
+    p_snap.add_argument("--restore", type=Path, help="Restore vault from snapshot file")
+
+    # clone
+    p_clone = subparsers.add_parser("clone", help="Clone an existing credential entry")
+    p_clone.add_argument("source", help="Source entry name")
+    p_clone.add_argument("destination", help="Destination entry name")
+
+    # rename
+    p_ren = subparsers.add_parser("rename", help="Rename an entry")
+    p_ren.add_argument("old_name", help="Old entry name")
+    p_ren.add_argument("new_name", help="New entry name")
+
+    # notes
+    p_not = subparsers.add_parser("notes", help="View or update entry notes")
+    p_not.add_argument("name", help="Entry name")
+    p_not.add_argument("--set", type=str, help="Update notes text")
+
+    # fav
+    p_fav = subparsers.add_parser("fav", help="Toggle entry favorite status")
+    p_fav.add_argument("name", help="Entry name")
+
+    # tag
+    p_tag = subparsers.add_parser("tag", help="Manage entry tags")
+    p_tag.add_argument("action", choices=["add", "remove", "list"], help="Action to perform")
+    p_tag.add_argument("tag_name", nargs="?", default="", help="Tag name")
+    p_tag.add_argument("entries", nargs="*", help="Entry names to update")
+
+    # clip
+    p_clip = subparsers.add_parser("clip", help="Manage clipboard")
+    p_clip.add_argument("--clear", action="store_true", help="Clear clipboard immediately")
+
+    # stats
+    p_stats = subparsers.add_parser("stats", help="Display vault metrics and statistics")
+    p_stats.add_argument("--json", action="store_true", help="Output stats as JSON")
+
+    # audit
+    p_aud = subparsers.add_parser("audit", help="Run comprehensive security audit")
+    p_aud.add_argument("--entropy", action="store_true", help="Rank entries by Shannon entropy")
+    p_aud.add_argument("--similar", action="store_true", help="Detect pattern-based password reuse")
+    p_aud.add_argument("--breakdown", action="store_true", help="Detailed health score breakdown")
+    p_aud.add_argument("--json", action="store_true", help="Output audit as JSON")
+
+    # export
+    p_exp = subparsers.add_parser("export", help="Export credentials")
+    p_exp.add_argument("output", nargs="?", type=Path, help="Output destination path")
+    p_exp.add_argument("--format", choices=["pvex", "encrypted-json", "csv", "env"], default="pvex", help="Export format")
+    p_exp.add_argument("--delimiter", default=",", help="Delimiter for CSV export")
+    p_exp.add_argument("--passphrase", default="", help="Passphrase for encrypted-json export")
+
+    # import
+    p_imp = subparsers.add_parser("import", help="Import credentials")
+    p_imp.add_argument("file", type=Path, help="File to import")
+    p_imp.add_argument("--format", choices=["auto", "csv", "json", "encrypted-json"], default="auto", help="Import format")
+    p_imp.add_argument("--on-conflict", choices=["skip", "rename", "overwrite"], default="rename", help="Conflict handling strategy")
+    p_imp.add_argument("--shred", action="store_true", help="Securely shred source file after import")
 
     # doctor
     p_doc = subparsers.add_parser("doctor", help="Run vault diagnostics and health check")
@@ -1126,8 +1222,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(get_completion_script(args.shell))
         return 0
 
+    if args.command == "clip":
+        if getattr(args, "clear", False):
+            clear_clipboard_now()
+            ok("Clipboard cleared.")
+            return 0
+
     if args.command == "gen":
-        if args.words > 0:
+        if getattr(args, "profile", None):
+            secret_val = generate_with_profile(args.profile, length=args.length if args.length != 20 else None)
+        elif args.words > 0:
             secret_val = generate_passphrase(words=args.words, sep=args.sep)
         else:
             secret_val = generate_random_password(
@@ -1180,12 +1284,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
 
         if args.command == "get":
-            target = args.name
-            if not target:
-                target = prompt("Enter entry name: ").strip()
-            matches, _ = find_matches(vault, target)
+            if getattr(args, "url", None):
+                domain_query = args.url.lower().strip()
+                matches = [k for k, v in vault.items() if domain_query in hostname_of(v.get("url", "")).lower() or domain_query in v.get("url", "").lower()]
+            else:
+                target = args.name
+                if not target:
+                    target = prompt("Enter entry name: ").strip()
+                matches, _ = find_matches(vault, target)
             if not matches:
-                err(f"Entry '{target}' not found.")
+                err("No entry found matching query.")
                 return 1
             chosen = matches[0]
             entry = vault[chosen]
@@ -1221,7 +1329,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.command == "list":
             entries = vault
             if args.tag:
-                entries = {k: v for k, v in entries.items() if args.tag.lower() in [t.lower() for t in v.get("tags", [])]}
+                req_tags = [t.strip().lower() for t in args.tag.split(",") if t.strip()]
+                entries = {k: v for k, v in entries.items() if any(rt in [t.lower() for t in v.get("tags", [])] for rt in req_tags)}
+            if getattr(args, "expiring_soon", None) is not None:
+                days_limit = args.expiring_soon if isinstance(args.expiring_soon, int) else 14
+                exp_entries = {}
+                for k, v in entries.items():
+                    exp_str = v.get("expires", "")
+                    if exp_str:
+                        d = days_until_expiry(exp_str)
+                        if d is not None and 0 <= d <= days_limit:
+                            exp_entries[k] = v
+                entries = exp_entries
             if args.fav:
                 entries = {k: v for k, v in entries.items() if entry_is_favorite(v)}
             names = sorted(entries.keys())
@@ -1237,7 +1356,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     print(f"  {n}{user_str}{tag_str}")
             else:
                 for n in names:
-                    fav = "★ " if entry_is_favorite(entries[n]) else "  "
+                    fav = "* " if entry_is_favorite(entries[n]) else "  "
                     print(f"  {fav}{n}")
 
         elif args.command == "totp":
@@ -1274,8 +1393,247 @@ def main(argv: Optional[List[str]] = None) -> int:
             ok(f"Printable Emergency Kit created: {p}")
 
         elif args.command == "backup":
-            out = export_vault(session, vault, args.output)
-            ok(f"Encrypted backup created: {out}")
+            if getattr(args, "verify", None):
+                ok_flag, msg, cnt = verify_backup(args.verify, master_pwd)
+                if ok_flag:
+                    ok(f"Backup verified ({cnt} entries): {msg}")
+                    return 0
+                else:
+                    err(f"Verification failed: {msg}")
+                    return 1
+            elif getattr(args, "prune", None) is not None:
+                retention = args.prune if isinstance(args.prune, int) and args.prune > 0 else 10
+                target_dir = args.output.parent if args.output else APP_DIR
+                pruned = prune_backups(target_dir, max_backups=retention)
+                ok(f"Pruned {len(pruned)} old backup file(s).")
+                return 0
+            else:
+                out = export_vault(session, vault, args.output)
+                ok(f"Encrypted backup created: {out}")
+
+        elif args.command == "snapshot":
+            if getattr(args, "list", False):
+                snaps = list_snapshots()
+                if not snaps:
+                    note("No snapshots found.")
+                    return 0
+                print("\n  Available Snapshots:")
+                for s in snaps:
+                    print(f"    - {s['name']}  ({s['size']} bytes, modified {s['modified']})")
+                print()
+                return 0
+            elif getattr(args, "restore", None):
+                target_snap = args.restore
+                res = restore_snapshot(target_snap)
+                ok(f"Restored snapshot to {res}.")
+                return 0
+
+        elif args.command == "clone":
+            src = args.source
+            dst = args.destination
+            if src not in vault:
+                err(f"Source entry '{src}' not found.")
+                return 1
+            if dst in vault:
+                err(f"Destination entry '{dst}' already exists.")
+                return 1
+            import copy
+            cloned = copy.deepcopy(vault[src])
+            cloned["notes"] = f"Cloned from {src}. {cloned.get('notes', '')}".strip()
+            vault[dst] = validate_entry(cloned, dst)
+            save_vault(session, vault)
+            ok(f"Cloned entry '{src}' to '{dst}'.")
+            return 0
+
+        elif args.command == "rename":
+            old_n = args.old_name
+            new_n = args.new_name
+            if old_n not in vault:
+                err(f"Entry '{old_n}' not found.")
+                return 1
+            if new_n in vault:
+                err(f"Target name '{new_n}' already exists.")
+                return 1
+            vault[new_n] = vault.pop(old_n)
+            save_vault(session, vault)
+            ok(f"Renamed entry '{old_n}' to '{new_n}'.")
+            return 0
+
+        elif args.command == "notes":
+            matches, _ = find_matches(vault, args.name)
+            if not matches:
+                err(f"Entry '{args.name}' not found.")
+                return 1
+            target = matches[0]
+            entry = vault[target]
+            if getattr(args, "set", None) is not None:
+                entry["notes"] = args.set
+                save_vault(session, vault)
+                ok(f"Updated notes for '{target}'.")
+                return 0
+            else:
+                note_text = entry.get("notes", "")
+                if not note_text:
+                    note(f"No notes recorded for '{target}'.")
+                else:
+                    print(f"\n  Notes for {target}:\n  {note_text}\n")
+                return 0
+
+        elif args.command == "fav":
+            matches, _ = find_matches(vault, args.name)
+            if not matches:
+                err(f"Entry '{args.name}' not found.")
+                return 1
+            target = matches[0]
+            curr = entry_is_favorite(vault[target])
+            vault[target]["favorite"] = not curr
+            save_vault(session, vault)
+            st = "favorited" if not curr else "unfavorited"
+            ok(f"Entry '{target}' {st}.")
+            return 0
+
+        elif args.command == "tag":
+            action = args.action
+            tag_val = args.tag_name.strip()
+            entries_list = args.entries
+            if action == "list":
+                all_tags = sorted({t for e in vault.values() if isinstance(e, dict) for t in e.get("tags", [])})
+                if not all_tags:
+                    note("No tags found.")
+                else:
+                    print(f"  Tags: {', '.join(all_tags)}")
+                return 0
+            if not tag_val or not entries_list:
+                err("Usage: vault tag <add|remove> <tag_name> <entry1> [entry2...]")
+                return 1
+            modified_count = 0
+            for ent_name in entries_list:
+                matches, _ = find_matches(vault, ent_name)
+                if not matches:
+                    warn(f"Entry '{ent_name}' not found.")
+                    continue
+                t_name = matches[0]
+                e = vault[t_name]
+                e_tags = e.setdefault("tags", [])
+                if action == "add":
+                    if tag_val not in e_tags:
+                        e_tags.append(tag_val)
+                        modified_count += 1
+                elif action == "remove":
+                    if tag_val in e_tags:
+                        e_tags.remove(tag_val)
+                        modified_count += 1
+            if modified_count > 0:
+                save_vault(session, vault)
+                ok(f"Updated tag '{tag_val}' on {modified_count} entry/entries.")
+            else:
+                note("No entries modified.")
+            return 0
+
+        elif args.command == "stats":
+            stats = collect_vault_stats(vault)
+            if args.json:
+                print(json.dumps(stats, indent=2))
+            else:
+                print("\n  Vault Statistics:")
+                print(f"    Total entries:           {stats['total_entries']}")
+                print(f"    Passwords:               {stats['passwords']}")
+                print(f"    API keys:                {stats['api_keys']}")
+                print(f"    2FA (TOTP) adoption:     {stats['totp_enabled']} ({stats['totp_coverage_percent']}%)")
+                print(f"    Favorites:               {stats['favorites']}")
+                print(f"    Unique tags:             {stats['unique_tags']}")
+                print(f"    Average password length: {stats['average_password_length']} chars\n")
+            return 0
+
+        elif args.command == "audit":
+            if getattr(args, "entropy", False):
+                res = calculate_entropy_audit(vault)
+                if args.json:
+                    print(json.dumps(res, indent=2))
+                else:
+                    print("\n  Password Entropy Audit (Ranked weakest to strongest):")
+                    for r in res[:20]:
+                        print(f"    {r['name']:<20} {r['entropy']:>5.1f} bits ({r['crack_time']})")
+                    print()
+                return 0
+            elif getattr(args, "similar", False):
+                sim = find_similar_passwords(vault)
+                if args.json:
+                    print(json.dumps([{"entry1": a, "entry2": b, "similarity": s} for a, b, s in sim], indent=2))
+                else:
+                    if not sim:
+                        ok("No dangerously similar password patterns detected.")
+                    else:
+                        print("\n  Similar Passwords Detected (Potential Pattern Reuse):")
+                        for a, b, s in sim:
+                            print(f"    - '{a}' and '{b}' ({s}% similarity)")
+                        print()
+                return 0
+            elif getattr(args, "breakdown", False):
+                h = collect_health(vault, check_pwned=False)
+                b = calculate_health_score_breakdown(h)
+                if args.json:
+                    print(json.dumps(b, indent=2))
+                else:
+                    print(f"\n  Health Score Breakdown: {b['score']}/100 (Grade: {b['grade']})")
+                    for k, v in b['deductions'].items():
+                        if v > 0:
+                            print(f"    - {k.replace('_', ' ').capitalize()}: -{v} pts")
+                    print()
+                return 0
+            else:
+                h = collect_health(vault, check_pwned=False)
+                score = calculate_health_score(h)
+                ok(f"Vault security score: {score}/100 across {len(vault)} entries.")
+                return 0
+
+        elif args.command == "export":
+            fmt = getattr(args, "format", "pvex") or "pvex"
+            out_path = args.output
+            if fmt == "encrypted-json":
+                passphrase = getattr(args, "passphrase", "")
+                if not passphrase:
+                    passphrase = secret_prompt("Enter export passphrase: ")
+                dest = out_path or (Path.cwd() / "vault-export.json")
+                export_encrypted_json(vault, dest, passphrase)
+                ok(f"Encrypted JSON envelope written to: {dest}")
+            elif fmt == "csv":
+                dest = out_path or (Path.cwd() / "vault-export.csv")
+                cnt = export_csv(vault, dest, delimiter=getattr(args, "delimiter", ","))
+                ok(f"CSV export ({cnt} entries) written to: {dest}")
+            elif fmt == "env":
+                dest = out_path or (Path.cwd() / ".env")
+                cnt = export_dotenv(vault, dest)
+                ok(f"Exported {cnt} secrets to: {dest}")
+            else:
+                out = export_vault(session, vault, out_path)
+                ok(f"Encrypted backup created: {out}")
+            return 0
+
+        elif args.command == "import":
+            p = Path(args.file)
+            fmt = getattr(args, "format", "auto")
+            is_enc_json = False
+            if fmt == "encrypted-json":
+                is_enc_json = True
+            elif fmt == "auto" and p.suffix.lower() == ".json":
+                try:
+                    snippet = p.read_text(encoding="utf-8", errors="ignore")[:300]
+                    if "passwordvault-encrypted-json" in snippet:
+                        is_enc_json = True
+                except Exception:
+                    pass
+            if is_enc_json:
+                passphrase = secret_prompt("Enter decryption passphrase for envelope: ")
+                added, skipped = import_encrypted_json(vault, session, p, passphrase, on_conflict=args.on_conflict)
+                ok(f"Imported {added} entries from encrypted JSON envelope ({skipped} skipped).")
+            elif p.suffix.lower() == ".json":
+                added, skipped = import_bitwarden_json(vault, session, p, conflict_mode=args.on_conflict, auto_shred=args.shred)
+                ok(f"Imported {added} entries from Bitwarden JSON ({skipped} skipped).")
+            else:
+                added = import_csv(vault, session, p, on_conflict=args.on_conflict, auto_shred=args.shred)
+                ok(f"Imported {added} entries from CSV.")
+            return 0
 
         elif args.command == "doctor":
             h = collect_health(vault, check_pwned=args.deep)

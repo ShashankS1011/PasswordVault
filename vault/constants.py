@@ -6,7 +6,7 @@ import os
 import re
 from pathlib import Path
 
-VERSION = "3.5.0"
+VERSION = "3.6.0"
 CREATOR_NAME = "Shashank"
 
 DEFAULT_CLIPBOARD_TIMEOUT = 15
@@ -41,6 +41,7 @@ TRASH_MAGIC = b"PVTR1"
 TRASH_MAGIC_V3 = b"PVTR3"
 EXPORT_MAGIC = b"PVEX1"
 EXPORT_MAGIC_V3 = b"PVEX3"
+EXPORT_MAGIC_GZ = b"PVGZ3"  # Compressed Argon2id + AES-256-GCM
 
 VAULT_SCHEMA_VERSION = 2
 

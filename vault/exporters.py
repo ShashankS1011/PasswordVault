@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import csv
+import gzip
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from vault.constants import EXPORT_MAGIC_V3
+from vault.constants import EXPORT_MAGIC_GZ, EXPORT_MAGIC_V3
 from vault.models import entry_custom_fields, entry_secret, entry_totp, entry_type
 from vault.storage import secure_write
 
@@ -25,13 +26,23 @@ def to_env_name(name: str) -> str:
     return clean
 
 
-def export_vault(session: Any, vault: Dict[str, Any], output_path: Optional[Path] = None) -> Path:
-    """Export encrypted vault archive using active master session key."""
+def export_vault(
+    session: Any,
+    vault: Dict[str, Any],
+    output_path: Optional[Path] = None,
+    compress: bool = False,
+) -> Path:
+    """Export encrypted vault archive using active master session key, with optional gzip compression."""
     from vault.crypto import pack_container
 
-    out = output_path or Path.cwd() / "vault-export.pvex"
+    suffix = ".pvex.gz" if compress else ".pvex"
+    out = output_path or Path.cwd() / f"vault-export{suffix}"
     packed = pack_container(session, vault)
-    secure_write(out, EXPORT_MAGIC_V3 + packed)
+    if compress:
+        compressed = gzip.compress(packed, compresslevel=9)
+        secure_write(out, EXPORT_MAGIC_GZ + compressed)
+    else:
+        secure_write(out, EXPORT_MAGIC_V3 + packed)
     return out
 
 

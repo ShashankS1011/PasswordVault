@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import gzip
 import json
 import os
 import secrets
 import struct
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -23,6 +24,7 @@ from vault.constants import (
     ARGON2_PARALLELISM,
     ARGON2_TIME_COST,
     EXPORT_MAGIC,
+    EXPORT_MAGIC_GZ,
     EXPORT_MAGIC_V3,
     LEGACY_PBKDF2_ITERATIONS,
     OLD_BACKUP_MAGIC,
@@ -343,7 +345,10 @@ def decrypt_legacy(token: bytes, master_password: str, salt: bytes) -> Dict[str,
 
 
 def decrypt_any_backup(data: bytes, master_password: str) -> Dict[str, Any]:
-    """Universal decryptor handling v3, v2, v1, and export archives."""
+    """Universal decryptor handling v3, v2, v1, and compressed/uncompressed export archives."""
+    if data.startswith(EXPORT_MAGIC_GZ):
+        decompressed = gzip.decompress(data[len(EXPORT_MAGIC_GZ) :])
+        return decrypt_container(decompressed, master_password)[1]
     if data.startswith(VAULT_MAGIC_V3) or data.startswith(VAULT_MAGIC_V2):
         return decrypt_container(data, master_password)[1]
     if data.startswith(EXPORT_MAGIC_V3):
@@ -584,7 +589,7 @@ def verify_vault_integrity(data: bytes) -> Tuple[bool, str]:
         if not (10 <= n_log2 <= 20 and 1 <= r <= 16 and 1 <= p <= 4):
             return False, "Unsupported Scrypt parameters in V2 header"
         return True, "Valid V2 container structure"
-    elif data.startswith(EXPORT_MAGIC_V3) or data.startswith(EXPORT_MAGIC):
+    elif data.startswith(EXPORT_MAGIC_GZ) or data.startswith(EXPORT_MAGIC_V3) or data.startswith(EXPORT_MAGIC):
         return True, "Valid export archive structure"
     return False, "Unrecognized or corrupted container header magic"
 
@@ -665,4 +670,36 @@ def validate_master_password_strength(password: str) -> Tuple[bool, str, float]:
     if entropy < 50.0:
         return False, f"Master password entropy ({entropy:.1f} bits) is below recommended 50.0 bits.", entropy
     return True, f"Master password acceptable ({entropy:.1f} bits entropy).", entropy
+
+
+def benchmark_argon2() -> List[Dict[str, Any]]:
+    """Benchmark local hardware against standard RFC 9106 Argon2id configurations."""
+    salt = os.urandom(16)
+    pwd = "BenchmarkPassword123!"
+    configs = [
+        {"name": "Standard (32 MB, 2 iters)", "time_cost": 2, "mem_cost": 32768, "lanes": 4},
+        {"name": "Recommended (64 MB, 3 iters)", "time_cost": 3, "mem_cost": 65536, "lanes": 4},
+        {"name": "Paranoid (128 MB, 4 iters)", "time_cost": 4, "mem_cost": 131072, "lanes": 4},
+    ]
+    results: List[Dict[str, Any]] = []
+    for cfg in configs:
+        t0 = time.perf_counter()
+        kdf = Argon2id(
+            salt=salt,
+            length=32,
+            iterations=cfg["time_cost"],
+            lanes=cfg["lanes"],
+            memory_cost=cfg["mem_cost"],
+        )
+        kdf.derive(pwd.encode("utf-8"))
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        results.append({
+            "name": cfg["name"],
+            "time_cost": cfg["time_cost"],
+            "memory_mb": cfg["mem_cost"] // 1024,
+            "lanes": cfg["lanes"],
+            "elapsed_ms": elapsed_ms,
+        })
+    return results
+
 

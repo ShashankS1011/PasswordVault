@@ -777,6 +777,33 @@ def timed_input(prompt_text: str, timeout: float) -> Tuple[str, bool]:
             return "", False
 
 
+def prompt_with_timeout(
+    msg: str,
+    timeout_seconds: int = 60,
+    default: str = "",
+) -> str:
+    """Prompt the user for input with a countdown/timeout fallback.
+
+    Returns entered string, or default if timeout expires.
+    """
+    if timeout_seconds <= 0:
+        return default
+
+    if not sys.stdin.isatty():
+        try:
+            val = input(f"  {ACCENT}{G_PROMPT}{RST} {msg} ")
+            return val if val else default
+        except (EOFError, KeyboardInterrupt, OSError):
+            return default
+
+    prompt_str = f"  {ACCENT}{G_PROMPT}{RST} {msg} "
+    val, timed_out = timed_input(prompt_str, float(timeout_seconds))
+    if timed_out or not val:
+        return default
+    return val
+
+
+
 class AutoLock:
     """Watches inactivity and workstation locks to trigger immediate wipe (Improvements #7, #8)."""
 

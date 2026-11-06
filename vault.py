@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Secure Password Vault (CLI) - v3.4.0
+Secure Password Vault (CLI) - v3.6.0
 
 Zero-trust, local-first encrypted password and credentials manager.
 """

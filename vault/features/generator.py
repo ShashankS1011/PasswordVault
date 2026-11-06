@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 import string
+import uuid
 from typing import List, Optional, Tuple
 
 # Ambiguous characters often misread on screen or paper
@@ -147,6 +148,8 @@ def generate_random_password(
     exclude_ambiguous: bool = False,
     min_digits: int = 1,
     min_symbols: int = 1,
+    include_chars: str = "",
+    exclude_chars: str = "",
 ) -> str:
     """Generate cryptographically secure random password with customizable constraints."""
     minimum = 4 if symbols else 3
@@ -155,27 +158,71 @@ def generate_random_password(
     if length > 1024:
         raise ValueError("password length must not exceed 1024")
 
-    lowers = [c for c in string.ascii_lowercase if not (exclude_ambiguous and c in AMBIGUOUS_CHARS)]
-    uppers = [c for c in string.ascii_uppercase if not (exclude_ambiguous and c in AMBIGUOUS_CHARS)]
-    digits = [c for c in string.digits if not (exclude_ambiguous and c in AMBIGUOUS_CHARS)]
-    sym_pool = [c for c in string.punctuation if not (exclude_ambiguous and c in AMBIGUOUS_CHARS)] if symbols else []
+    excluded_set = set(exclude_chars)
+    if exclude_ambiguous:
+        excluded_set.update(AMBIGUOUS_CHARS)
 
-    chars: List[str] = [
-        secrets.choice(lowers),
-        secrets.choice(uppers),
-    ]
+    lowers = [c for c in string.ascii_lowercase if c not in excluded_set]
+    uppers = [c for c in string.ascii_uppercase if c not in excluded_set]
+    digits = [c for c in string.digits if c not in excluded_set]
+    sym_pool = [c for c in string.punctuation if c not in excluded_set] if symbols else []
 
-    for _ in range(max(1, min_digits)):
-        chars.append(secrets.choice(digits))
+    if not lowers and not uppers and not digits and not sym_pool and not include_chars:
+        raise ValueError("Character pool is empty after exclusions.")
+
+    chars: List[str] = []
+    if lowers:
+        chars.append(secrets.choice(lowers))
+    if uppers:
+        chars.append(secrets.choice(uppers))
+
+    for _ in range(max(1, min_digits) if digits else 0):
+        if digits:
+            chars.append(secrets.choice(digits))
 
     if symbols and sym_pool:
         for _ in range(max(1, min_symbols)):
             chars.append(secrets.choice(sym_pool))
 
-    full_pool = lowers + uppers + digits + (sym_pool if symbols else [])
-    chars += [secrets.choice(full_pool) for _ in range(length - len(chars))]
+    if include_chars:
+        for c in include_chars:
+            chars.append(c)
+
+    full_pool = lowers + uppers + digits + (sym_pool if symbols else []) + list(include_chars)
+    if not full_pool:
+        raise ValueError("No available characters to generate password.")
+
+    while len(chars) < length:
+        chars.append(secrets.choice(full_pool))
+    if len(chars) > length:
+        chars = chars[:length]
+
     secrets.SystemRandom().shuffle(chars)
     return "".join(chars)
+
+
+def generate_random_token(token_type: str = "hex", length: int = 32) -> str:
+    """Generate high-entropy API tokens, UUIDs, or random keys."""
+    t = token_type.strip().lower()
+    if t == "uuid":
+        return str(uuid.uuid4())
+    if length < 8:
+        raise ValueError("token length must be at least 8")
+    if length > 2048:
+        raise ValueError("token length must not exceed 2048")
+
+    if t == "hex":
+        needed_bytes = (length + 1) // 2
+        return secrets.token_hex(needed_bytes)[:length]
+    elif t in ("base64", "urlsafe_b64", "b64"):
+        return secrets.token_urlsafe(length)[:length]
+    elif t == "alphanumeric":
+        chars = string.ascii_letters + string.digits
+        return "".join(secrets.choice(chars) for _ in range(length))
+    else:
+        raise ValueError(
+            f"Unsupported token type '{token_type}'. Choose from 'hex', 'base64', 'uuid', or 'alphanumeric'."
+        )
 
 
 def generate_passphrase(

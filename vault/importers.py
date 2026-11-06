@@ -204,3 +204,90 @@ def import_encrypted_json(
     save_vault(session, vault)
     return added, skipped
 
+
+def import_keepass_xml(
+    vault: Dict[str, Any],
+    session: Any,
+    xml_path: Path,
+    on_conflict: str = "rename",
+    auto_shred: bool = False,
+) -> Tuple[int, int]:
+    """Import credentials from a KeePass 2.x XML export file."""
+    import xml.etree.ElementTree as ET
+
+    from vault.crypto import save_vault
+
+    if not xml_path.is_file():
+        raise FileNotFoundError(f"File not found: {xml_path}")
+
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+    except Exception as e:
+        raise ValueError(f"Failed to parse KeePass XML file: {e}") from e
+
+    added = 0
+    skipped = 0
+
+    for entry_elem in root.iter("Entry"):
+        title = ""
+        username = ""
+        password = ""
+        url = ""
+        notes = ""
+        custom_fields: Dict[str, str] = {}
+
+        for str_elem in entry_elem.findall("String"):
+            key_el = str_elem.find("Key")
+            val_el = str_elem.find("Value")
+            if key_el is not None and key_el.text:
+                k = key_el.text.strip()
+                v = val_el.text.strip() if val_el is not None and val_el.text else ""
+                k_lower = k.lower()
+                if k_lower == "title":
+                    title = v
+                elif k_lower in ("username", "user name"):
+                    username = v
+                elif k_lower == "password":
+                    password = v
+                elif k_lower in ("url", "website"):
+                    url = v
+                elif k_lower in ("notes", "comment", "comments"):
+                    notes = v
+                elif k_lower not in ("history",):
+                    if v:
+                        custom_fields[k] = v
+
+        if not password and not title and not username:
+            skipped += 1
+            continue
+
+        name = title or f"KeePass-Entry-{added + 1}"
+        if name in vault:
+            if on_conflict == "skip":
+                skipped += 1
+                continue
+            elif on_conflict == "rename":
+                name = _pick_conflict_name(name, vault)
+
+        entry: Dict[str, Any] = {
+            "type": "password",
+            "username": username,
+            "password": password,
+        }
+        if url:
+            entry["url"] = url
+        if notes:
+            entry["notes"] = notes
+        if custom_fields:
+            entry["custom_fields"] = custom_fields
+
+        vault[name] = validate_entry(entry, name)
+        added += 1
+
+    save_vault(session, vault)
+    if auto_shred:
+        shred_file(xml_path)
+    return added, skipped
+
+

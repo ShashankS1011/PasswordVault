@@ -5,11 +5,25 @@ from __future__ import annotations
 import difflib
 import re
 from datetime import date
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from vault.constants import EXPIRY_WARN_DAYS, FUZZY_CUTOFF, ROTATE_AFTER_DAYS
 from vault.models import days_until_expiry, entry_note, entry_secret, entry_type
 from vault.ui import check_password_strength
+
+COMMON_PASSWORDS = {
+    "123456", "password", "12345678", "qwerty", "123456789", "12345", "1234", "111111",
+    "1234567", "dragon", "welcome", "admin", "login", "iloveyou", "princess", "monkey",
+    "default", "letmein", "sunshine", "master", "football", "charlie", "trustno1", "computer",
+    "superman", "starwars", "pass123", "password123", "secret", "p@ssword", "root", "toor",
+}
+
+
+def is_common_password(password: str) -> bool:
+    """Check if password appears in local top common dictionary."""
+    if not password:
+        return False
+    return password.strip().lower() in COMMON_PASSWORDS
 
 
 def find_duplicate_secret(vault: Dict[str, Any], secret: str, exclude: str = "") -> List[str]:
@@ -36,6 +50,7 @@ def find_all_duplicates(vault: Dict[str, Any]) -> Dict[str, List[str]]:
 def collect_health(vault: Dict[str, Any], check_pwned: bool = False) -> Dict[str, Any]:
     """Compile comprehensive vault health report."""
     weak: List[Tuple[str, str]] = []
+    common: List[str] = []
     expired: List[str] = []
     expiring: List[Tuple[str, int]] = []
     old: List[Tuple[str, int]] = []
@@ -49,6 +64,8 @@ def collect_health(vault: Dict[str, Any], check_pwned: bool = False) -> Dict[str
             grade, _ = check_password_strength(sec)
             if grade == "Weak":
                 weak.append((name, grade))
+            if is_common_password(sec):
+                common.append(name)
 
         exp_str = entry.get("expires", "")
         if exp_str:
@@ -73,6 +90,7 @@ def collect_health(vault: Dict[str, Any], check_pwned: bool = False) -> Dict[str
     report: Dict[str, Any] = {
         "total_entries": len(vault),
         "weak": weak,
+        "common": common,
         "duplicates": duplicates,
         "expired": expired,
         "expiring": expiring,
@@ -149,6 +167,42 @@ def find_matches(vault: Dict[str, Any], term: str, cutoff: float = FUZZY_CUTOFF)
         return [n for _, n in scored[:8]], "similar"
 
     return [], "none"
+
+
+def find_matches_regex(vault: Dict[str, Any], pattern_str: str) -> Tuple[List[str], Optional[str]]:
+    """Search entries by regular expression pattern across name, username, URL, and notes."""
+    try:
+        rx = re.compile(pattern_str, re.IGNORECASE)
+    except re.error as e:
+        return [], f"Invalid regular expression: {e}"
+
+    matches: List[str] = []
+    for name, entry in vault.items():
+        search_corpus = [
+            name,
+            entry.get("username", "") if isinstance(entry, dict) else "",
+            entry.get("url", "") if isinstance(entry, dict) else "",
+            entry.get("notes", "") if isinstance(entry, dict) else "",
+        ]
+        if any(rx.search(field) for field in search_corpus if field):
+            matches.append(name)
+    return sorted(matches), None
+
+
+def check_entry_rotation_needed(entry: Dict[str, Any], threshold_days: int = ROTATE_AFTER_DAYS) -> Tuple[bool, int]:
+    """Check whether credential age exceeds recommended rotation interval."""
+    if not isinstance(entry, dict):
+        return False, 0
+    created_str = entry.get("created", "")
+    if not created_str:
+        return False, 0
+    try:
+        c_date = date.fromisoformat(created_str)
+        age = (date.today() - c_date).days
+        return age > threshold_days, age
+    except ValueError:
+        return False, 0
+
 
 
 def find_similar_passwords(

@@ -23,12 +23,15 @@ from vault.constants import (
     DEFAULT_CLIPBOARD_TIMEOUT,
     DEFAULT_SHOW_SECONDS,
     MAX_LOGIN_ATTEMPTS,
+    ROTATE_AFTER_DAYS,
     TRASH_DAYS,
     VAULT_FILE,
+    VAULT_SCHEMA_VERSION,
     VERSION,
 )
 from vault.crypto import (
     Session,
+    benchmark_argon2,
     decrypt_container,
     is_dpapi_available,
     migrate_to_argon2,
@@ -49,15 +52,18 @@ from vault.features.generator import (
     generate_candidates,
     generate_passphrase,
     generate_random_password,
+    generate_random_token,
     generate_with_profile,
 )
 from vault.features.health import (
     calculate_entropy_audit,
     calculate_health_score,
     calculate_health_score_breakdown,
+    check_entry_rotation_needed,
     collect_health,
     collect_vault_stats,
     find_matches,
+    find_matches_regex,
     find_similar_passwords,
 )
 from vault.features.pwned import audit_vault_breaches, check_password_breach
@@ -66,6 +72,7 @@ from vault.importers import (
     import_bitwarden_json,
     import_csv,
     import_encrypted_json,
+    import_keepass_xml,
 )
 from vault.integrations import (
     get_completion_script,
@@ -79,6 +86,7 @@ from vault.models import (
     entry_totp,
     hostname_of,
     validate_entry,
+    validate_vault_schema_detailed,
 )
 from vault.storage import (
     check_lockout,
@@ -893,20 +901,85 @@ def cmd_get(argv: Optional[List[str]] = None) -> int:
 def cmd_gen(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="vault gen")
     parser.add_argument("--length", type=int, default=20)
+    parser.add_argument("--profile", choices=["pin", "alphanumeric", "memorable", "max"])
+    parser.add_argument("--token", choices=["hex", "base64", "uuid", "alphanumeric"])
+    parser.add_argument("--include", type=str, default="")
+    parser.add_argument("--exclude", type=str, default="")
     parser.add_argument("--words", type=int, default=0)
     parser.add_argument("--sep", type=str, default="-")
     parser.add_argument("--no-symbols", action="store_true")
     parser.add_argument("--no-ambiguous", action="store_true")
     parser.add_argument("--show", action="store_true")
     args = parser.parse_args(argv or [])
-    if args.words > 0:
+    if args.token:
+        sec = generate_random_token(token_type=args.token, length=args.length)
+    elif args.profile:
+        sec = generate_with_profile(args.profile, length=args.length if args.length != 20 else None)
+    elif args.words > 0:
         sec = generate_passphrase(words=args.words, sep=args.sep)
     else:
-        sec = generate_random_password(length=args.length, symbols=not args.no_symbols, exclude_ambiguous=args.no_ambiguous)
+        sec = generate_random_password(
+            length=args.length,
+            symbols=not args.no_symbols,
+            exclude_ambiguous=args.no_ambiguous,
+            include_chars=args.include or "",
+            exclude_chars=args.exclude or "",
+        )
     if args.show:
-        print(sec)
+        sys.stdout.write(sec + "\n")
     else:
         copy_with_autoclear(sec, timeout=CLIPBOARD_TIMEOUT, ui_callbacks={"ok": ok})
+    return 0
+
+
+def cmd_benchmark(argv: Optional[List[str]] = None) -> int:
+    args = list(argv or [])
+    json_out = "--json" in args
+    results = benchmark_argon2()
+    if json_out:
+        sys.stdout.write(json.dumps(results, indent=2) + "\n")
+    else:
+        sys.stdout.write("\n  Argon2id Hardware Performance Benchmark:\n")
+        sys.stdout.write("  " + "-" * 68 + "\n")
+        sys.stdout.write(f"  {'Configuration':<34} {'Memory':<10} {'Iterations':<12} {'Latency'}\n")
+        sys.stdout.write("  " + "-" * 68 + "\n")
+        for r in results:
+            cfg_str = str(r["name"])
+            mem_str = f"{int(r['memory_mb'])} MB"
+            iter_str = f"{int(r['time_cost'])} passes"
+            lat_str = f"{float(r['elapsed_ms']):.1f} ms"
+            sys.stdout.write(f"  {cfg_str:<34} {mem_str:<10} {iter_str:<12} {lat_str}\n")
+        sys.stdout.write("  " + "-" * 68 + "\n\n")
+    return 0
+
+
+def cmd_search(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(prog="vault search")
+    parser.add_argument("query", nargs="?", default="")
+    parser.add_argument("--regex", "-r", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv or [])
+    session, vault = unlock_vault()
+    if not session or not vault:
+        return 1
+    if not args.query:
+        err("Search query or pattern required.")
+        return 1
+    if args.regex:
+        matches, err_msg = find_matches_regex(vault, args.query)
+        if err_msg:
+            err(err_msg)
+            return 1
+    else:
+        matches, _ = find_matches(vault, args.query)
+    if args.json:
+        sys.stdout.write(json.dumps(matches, indent=2) + "\n")
+    else:
+        if not matches:
+            note(f"No entries found matching '{args.query}'.")
+        else:
+            for m in matches:
+                sys.stdout.write(f"  {m}\n")
     return 0
 
 
@@ -1060,6 +1133,8 @@ SUBCOMMANDS = {
     "doctor": cmd_doctor,
     "completion": cmd_completion,
     "open": cmd_open,
+    "benchmark": cmd_benchmark,
+    "search": cmd_search,
 }
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -1085,14 +1160,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_get.add_argument("--json", action="store_true", help="Output details in machine-readable JSON")
     p_get.add_argument("--raw", action="store_true", help="Print raw secret only to stdout without newline")
     p_get.add_argument("--quiet", action="store_true", help="Suppress status output")
+    p_get.add_argument("--check-age", action="store_true", help="Check credential age and alert if rotation is overdue")
 
     # list
     p_list = subparsers.add_parser("list", help="List all entry names")
     p_list.add_argument("--tag", type=str, help="Filter entries by tag(s)")
     p_list.add_argument("--fav", action="store_true", help="Show favorites only")
+    p_list.add_argument("--regex", "-r", type=str, help="Filter entries by regular expression pattern")
     p_list.add_argument("--expiring-soon", type=int, nargs="?", const=14, help="Show credentials expiring within N days")
     p_list.add_argument("--json", action="store_true", help="Output names in JSON array")
     p_list.add_argument("--compact", "-c", action="store_true", help="Display dense single-line listing")
+
+    # search
+    p_search = subparsers.add_parser("search", help="Search vault entries")
+    p_search.add_argument("query", nargs="?", default="", help="Search query or pattern")
+    p_search.add_argument("--regex", "-r", action="store_true", help="Treat query as regular expression")
+    p_search.add_argument("--json", action="store_true", help="Output search results in JSON")
 
     # open
     p_open = subparsers.add_parser("open", help="Open entry login URL in default web browser")
@@ -1102,6 +1185,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_gen = subparsers.add_parser("gen", help="Generate passwords or passphrases")
     p_gen.add_argument("--length", type=int, default=20, help="Password length")
     p_gen.add_argument("--profile", choices=["pin", "alphanumeric", "memorable", "max"], help="Preset security profile")
+    p_gen.add_argument("--token", choices=["hex", "base64", "uuid", "alphanumeric"], help="Generate high-entropy token/key")
+    p_gen.add_argument("--include", type=str, default="", help="Characters to force-include in password")
+    p_gen.add_argument("--exclude", type=str, default="", help="Characters to exclude from password")
     p_gen.add_argument("--words", type=int, default=0, help="Passphrase word count (uses EFF list)")
     p_gen.add_argument("--sep", type=str, default="-", help="Passphrase separator")
     p_gen.add_argument("--no-symbols", action="store_true", help="Omit symbols from password")
@@ -1122,6 +1208,7 @@ def build_parser() -> argparse.ArgumentParser:
     # backup
     p_bak = subparsers.add_parser("backup", help="Create encrypted vault backup")
     p_bak.add_argument("--output", type=Path, help="Target destination path")
+    p_bak.add_argument("--compress", "-z", action="store_true", help="Create compressed backup archive (.pvex.gz)")
     p_bak.add_argument("--verify", type=Path, help="Verify integrity of an encrypted backup file")
     p_bak.add_argument("--prune", type=int, nargs="?", const=10, help="Prune older backups exceeding retention count")
 
@@ -1180,14 +1267,24 @@ def build_parser() -> argparse.ArgumentParser:
     # import
     p_imp = subparsers.add_parser("import", help="Import credentials")
     p_imp.add_argument("file", type=Path, help="File to import")
-    p_imp.add_argument("--format", choices=["auto", "csv", "json", "encrypted-json"], default="auto", help="Import format")
+    p_imp.add_argument(
+        "--format",
+        choices=["auto", "csv", "json", "encrypted-json", "xml", "keepass"],
+        default="auto",
+        help="Import format",
+    )
     p_imp.add_argument("--on-conflict", choices=["skip", "rename", "overwrite"], default="rename", help="Conflict handling strategy")
     p_imp.add_argument("--shred", action="store_true", help="Securely shred source file after import")
 
     # doctor
     p_doc = subparsers.add_parser("doctor", help="Run vault diagnostics and health check")
     p_doc.add_argument("--deep", action="store_true", help="Perform deep cryptographic validation")
+    p_doc.add_argument("--validate-schema", action="store_true", help="Run comprehensive schema validation against all entries")
     p_doc.add_argument("--json", action="store_true", help="Output report as JSON")
+
+    # benchmark
+    p_bench = subparsers.add_parser("benchmark", help="Benchmark local Argon2id key derivation performance")
+    p_bench.add_argument("--json", action="store_true", help="Output benchmark results in JSON")
 
     # completion
     p_comp = subparsers.add_parser("completion", help="Generate shell tab-completion scripts")
@@ -1228,8 +1325,28 @@ def main(argv: Optional[List[str]] = None) -> int:
             ok("Clipboard cleared.")
             return 0
 
+    if args.command == "benchmark":
+        results = benchmark_argon2()
+        if getattr(args, "json", False):
+            sys.stdout.write(json.dumps(results, indent=2) + "\n")
+        else:
+            sys.stdout.write("\n  Argon2id Hardware Performance Benchmark:\n")
+            sys.stdout.write("  " + "-" * 68 + "\n")
+            sys.stdout.write(f"  {'Configuration':<34} {'Memory':<10} {'Iterations':<12} {'Latency'}\n")
+            sys.stdout.write("  " + "-" * 68 + "\n")
+            for r in results:
+                cfg_str = str(r["name"])
+                mem_str = f"{int(r['memory_mb'])} MB"
+                iter_str = f"{int(r['time_cost'])} passes"
+                lat_str = f"{float(r['elapsed_ms']):.1f} ms"
+                sys.stdout.write(f"  {cfg_str:<34} {mem_str:<10} {iter_str:<12} {lat_str}\n")
+            sys.stdout.write("  " + "-" * 68 + "\n\n")
+        return 0
+
     if args.command == "gen":
-        if getattr(args, "profile", None):
+        if getattr(args, "token", None):
+            secret_val = generate_random_token(token_type=args.token, length=args.length)
+        elif getattr(args, "profile", None):
             secret_val = generate_with_profile(args.profile, length=args.length if args.length != 20 else None)
         elif args.words > 0:
             secret_val = generate_passphrase(words=args.words, sep=args.sep)
@@ -1238,9 +1355,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 length=args.length,
                 symbols=not args.no_symbols,
                 exclude_ambiguous=args.no_ambiguous,
+                include_chars=getattr(args, "include", "") or "",
+                exclude_chars=getattr(args, "exclude", "") or "",
             )
         if args.show:
-            print(secret_val)
+            sys.stdout.write(secret_val + "\n")
         else:
             copy_with_autoclear(secret_val, timeout=CLIPBOARD_TIMEOUT, ui_callbacks={"ok": ok})
         return 0
@@ -1297,8 +1416,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return 1
             chosen = matches[0]
             entry = vault[chosen]
+            if getattr(args, "check_age", False):
+                needs_rot, age_days = check_entry_rotation_needed(entry)
+                if needs_rot:
+                    warn(f"Credential '{chosen}' is {age_days} days old (exceeds recommended {ROTATE_AFTER_DAYS}-day rotation policy).")
+                elif age_days > 0:
+                    ok(f"Credential '{chosen}' is {age_days} days old (within rotation policy).")
+                else:
+                    note(f"Credential '{chosen}' has no creation date recorded.")
             if args.json:
-                print(json.dumps({chosen: entry}, indent=2))
+                sys.stdout.write(json.dumps({chosen: entry}, indent=2) + "\n")
                 return 0
             deliver_secret(
                 chosen,
@@ -1309,6 +1436,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                 raw=getattr(args, "raw", False),
                 quiet=getattr(args, "quiet", False),
             )
+
+        elif args.command == "search":
+            if getattr(args, "regex", False):
+                matches, err_msg = find_matches_regex(vault, args.query)
+                if err_msg:
+                    err(err_msg)
+                    return 1
+            else:
+                matches, _ = find_matches(vault, args.query)
+            if args.json:
+                sys.stdout.write(json.dumps(matches, indent=2) + "\n")
+            else:
+                if not matches:
+                    note(f"No entries found matching '{args.query}'.")
+                else:
+                    for m in matches:
+                        sys.stdout.write(f"  {m}\n")
+            return 0
 
         elif args.command == "open":
             matches, _ = find_matches(vault, args.name)
@@ -1328,6 +1473,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         elif args.command == "list":
             entries = vault
+            if getattr(args, "regex", None):
+                rx_matches, err_msg = find_matches_regex(entries, args.regex)
+                if err_msg:
+                    err(err_msg)
+                    return 1
+                entries = {k: entries[k] for k in rx_matches if k in entries}
             if args.tag:
                 req_tags = [t.strip().lower() for t in args.tag.split(",") if t.strip()]
                 entries = {k: v for k, v in entries.items() if any(rt in [t.lower() for t in v.get("tags", [])] for rt in req_tags)}
@@ -1345,7 +1496,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 entries = {k: v for k, v in entries.items() if entry_is_favorite(v)}
             names = sorted(entries.keys())
             if args.json:
-                print(json.dumps(names, indent=2))
+                sys.stdout.write(json.dumps(names, indent=2) + "\n")
             elif getattr(args, "compact", False):
                 for n in names:
                     e = entries[n]
@@ -1353,11 +1504,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     tags = e.get("tags", [])
                     tag_str = f" [{', '.join(tags)}]" if tags else ""
                     user_str = f" ({u})" if u else ""
-                    print(f"  {n}{user_str}{tag_str}")
+                    sys.stdout.write(f"  {n}{user_str}{tag_str}\n")
             else:
                 for n in names:
                     fav = "* " if entry_is_favorite(entries[n]) else "  "
-                    print(f"  {fav}{n}")
+                    sys.stdout.write(f"  {fav}{n}\n")
 
         elif args.command == "totp":
             if args.name not in vault:
@@ -1408,8 +1559,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 ok(f"Pruned {len(pruned)} old backup file(s).")
                 return 0
             else:
-                out = export_vault(session, vault, args.output)
-                ok(f"Encrypted backup created: {out}")
+                compress = getattr(args, "compress", False)
+                out = export_vault(session, vault, args.output, compress=compress)
+                st = "Compressed encrypted backup" if compress else "Encrypted backup"
+                ok(f"{st} created: {out}")
+                return 0
 
         elif args.command == "snapshot":
             if getattr(args, "list", False):
@@ -1533,58 +1687,58 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.command == "stats":
             stats = collect_vault_stats(vault)
             if args.json:
-                print(json.dumps(stats, indent=2))
+                sys.stdout.write(json.dumps(stats, indent=2) + "\n")
             else:
-                print("\n  Vault Statistics:")
-                print(f"    Total entries:           {stats['total_entries']}")
-                print(f"    Passwords:               {stats['passwords']}")
-                print(f"    API keys:                {stats['api_keys']}")
-                print(f"    2FA (TOTP) adoption:     {stats['totp_enabled']} ({stats['totp_coverage_percent']}%)")
-                print(f"    Favorites:               {stats['favorites']}")
-                print(f"    Unique tags:             {stats['unique_tags']}")
-                print(f"    Average password length: {stats['average_password_length']} chars\n")
+                sys.stdout.write("\n  Vault Statistics:\n")
+                sys.stdout.write(f"    Total entries:           {int(stats['total_entries'])}\n")
+                sys.stdout.write(f"    Passwords:               {int(stats['passwords'])}\n")
+                sys.stdout.write(f"    API keys:                {int(stats['api_keys'])}\n")
+                sys.stdout.write(f"    2FA (TOTP) adoption:     {int(stats['totp_enabled'])} ({float(stats['totp_coverage_percent']):.1f}%)\n")
+                sys.stdout.write(f"    Favorites:               {int(stats['favorites'])}\n")
+                sys.stdout.write(f"    Unique tags:             {int(stats['unique_tags'])}\n")
+                sys.stdout.write(f"    Average password length: {float(stats['average_password_length']):.1f} chars\n\n")
             return 0
 
         elif args.command == "audit":
             if getattr(args, "entropy", False):
                 res = calculate_entropy_audit(vault)
                 if args.json:
-                    print(json.dumps(res, indent=2))
+                    sys.stdout.write(json.dumps(res, indent=2) + "\n")
                 else:
-                    print("\n  Password Entropy Audit (Ranked weakest to strongest):")
+                    sys.stdout.write("\n  Password Entropy Audit (Ranked weakest to strongest):\n")
                     for r in res[:20]:
-                        print(f"    {r['name']:<20} {r['entropy']:>5.1f} bits ({r['crack_time']})")
-                    print()
+                        sys.stdout.write(f"    {str(r['name']):<20} {float(r['entropy']):>5.1f} bits ({str(r['crack_time'])})\n")
+                    sys.stdout.write("\n")
                 return 0
             elif getattr(args, "similar", False):
                 sim = find_similar_passwords(vault)
                 if args.json:
-                    print(json.dumps([{"entry1": a, "entry2": b, "similarity": s} for a, b, s in sim], indent=2))
+                    sys.stdout.write(json.dumps([{"entry1": a, "entry2": b, "similarity": s} for a, b, s in sim], indent=2) + "\n")
                 else:
                     if not sim:
                         ok("No dangerously similar password patterns detected.")
                     else:
-                        print("\n  Similar Passwords Detected (Potential Pattern Reuse):")
+                        sys.stdout.write("\n  Similar Passwords Detected (Potential Pattern Reuse):\n")
                         for a, b, s in sim:
-                            print(f"    - '{a}' and '{b}' ({s}% similarity)")
-                        print()
+                            sys.stdout.write(f"    - '{a}' and '{b}' ({int(s)}% similarity)\n")
+                        sys.stdout.write("\n")
                 return 0
             elif getattr(args, "breakdown", False):
                 h = collect_health(vault, check_pwned=False)
                 b = calculate_health_score_breakdown(h)
                 if args.json:
-                    print(json.dumps(b, indent=2))
+                    sys.stdout.write(json.dumps(b, indent=2) + "\n")
                 else:
-                    print(f"\n  Health Score Breakdown: {b['score']}/100 (Grade: {b['grade']})")
+                    sys.stdout.write(f"\n  Health Score Breakdown: {int(b['score'])}/100 (Grade: {str(b['grade'])})\n")
                     for k, v in b['deductions'].items():
                         if v > 0:
-                            print(f"    - {k.replace('_', ' ').capitalize()}: -{v} pts")
-                    print()
+                            sys.stdout.write(f"    - {str(k).replace('_', ' ').capitalize()}: -{int(v)} pts\n")
+                    sys.stdout.write("\n")
                 return 0
             else:
                 h = collect_health(vault, check_pwned=False)
                 score = calculate_health_score(h)
-                ok(f"Vault security score: {score}/100 across {len(vault)} entries.")
+                ok(f"Vault security score: {int(score)}/100 across {len(vault)} entries.")
                 return 0
 
         elif args.command == "export":
@@ -1627,6 +1781,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 passphrase = secret_prompt("Enter decryption passphrase for envelope: ")
                 added, skipped = import_encrypted_json(vault, session, p, passphrase, on_conflict=args.on_conflict)
                 ok(f"Imported {added} entries from encrypted JSON envelope ({skipped} skipped).")
+            elif fmt in ("xml", "keepass") or (fmt == "auto" and p.suffix.lower() == ".xml"):
+                added, skipped = import_keepass_xml(vault, session, p, on_conflict=args.on_conflict, auto_shred=args.shred)
+                ok(f"Imported {added} entries from KeePass XML ({skipped} skipped).")
             elif p.suffix.lower() == ".json":
                 added, skipped = import_bitwarden_json(vault, session, p, conflict_mode=args.on_conflict, auto_shred=args.shred)
                 ok(f"Imported {added} entries from Bitwarden JSON ({skipped} skipped).")
@@ -1636,10 +1793,21 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
 
         elif args.command == "doctor":
+            if getattr(args, "validate_schema", False):
+                valid, errors = validate_vault_schema_detailed({"schema_version": VAULT_SCHEMA_VERSION, "entries": vault})
+                if valid:
+                    ok(f"Vault schema verification passed (all {len(vault)} entries strictly conform to schema v{VAULT_SCHEMA_VERSION}).")
+                    return 0
+                else:
+                    err(f"Schema verification failed ({len(errors)} error(s) found):")
+                    for e in errors:
+                        sys.stdout.write(f"    - {e}\n")
+                    return 1
             h = collect_health(vault, check_pwned=args.deep)
             if args.json:
-                print(json.dumps(h, indent=2))
+                sys.stdout.write(json.dumps(h, indent=2) + "\n")
             else:
                 ok(f"Vault operational: {h['total_entries']} entries, {len(h['weak'])} weak, {len(h['duplicates'])} duplicates.")
+            return 0
 
     return 0

@@ -119,7 +119,9 @@ vault totp GitHub
 | `vault get <name> --totp` | Display live TOTP 2FA code with remaining validity |
 | `vault get <name> --qr` | Display secret as ASCII QR code in terminal |
 | `vault get <name> --raw` | Print raw secret only to stdout (for scripting and pipes) |
+| `vault get <name> --check-age` | Check credential age against recommended rotation policy |
 | `vault get --url <domain>` | Search credentials matching URL or hostname |
+| `vault search <query> [--regex]` | Search entries by keyword or regular expression pattern |
 | `vault open <name>` | Launch service login URL in default web browser |
 | `vault notes <name>` | View or update entry notes (`--set "text"`) |
 
@@ -131,16 +133,20 @@ vault totp GitHub
 | `vault list --compact` | Single-line dense view with usernames and tags |
 | `vault list --fav` | Filter entries flagged as favorites |
 | `vault list --tag <tags>` | Filter entries matching comma-separated tags |
+| `vault list --regex <pattern>` | Filter entries using regular expressions |
 | `vault list --expiring-soon [days]` | Filter credentials expiring within N days (default: 14) |
 | `vault list --json` | Output entry names as a JSON array |
 
-### Password Generation
+### Password and Token Generation
 
 | Command | Description |
 | --- | --- |
 | `vault gen` | Generate 20-character high-entropy password |
 | `vault gen --length <n>` | Generate custom length password (e.g. `--length 32`) |
 | `vault gen --profile <type>` | Generate via preset profile: `pin`, `alphanumeric`, `memorable`, `max` |
+| `vault gen --token <type>` | Generate high-entropy API tokens: `hex`, `base64`, `uuid`, `alphanumeric` |
+| `vault gen --include <chars>` | Force inclusion of specific character sets |
+| `vault gen --exclude <chars>` | Exclude specified characters from generated secrets |
 | `vault gen --words <n>` | Generate EFF wordlist passphrase (e.g. `--words 5 --sep "-"`) |
 | `vault gen --show` | Print generated secret to stdout instead of copying |
 
@@ -163,6 +169,8 @@ vault totp GitHub
 | Command | Description |
 | --- | --- |
 | `vault doctor [--deep] [--json]` | Validate vault integrity, permissions, backups, and security hygiene |
+| `vault doctor --validate-schema` | Validate full decrypted schema against version specification |
+| `vault benchmark [--json]` | Benchmark local host hardware for Argon2id key derivation |
 | `vault audit` | Overall vault security score (0-100%) |
 | `vault audit --entropy` | Rank all credentials by Shannon entropy (weakest first) |
 | `vault audit --similar` | Detect pattern-based password variations and shared roots |
@@ -176,6 +184,7 @@ vault totp GitHub
 | Command | Description |
 | --- | --- |
 | `vault backup [--output <path>]` | Create encrypted vault backup archive |
+| `vault backup --compress` | Create gzip-compressed encrypted backup archive (`.pvex.gz`) |
 | `vault backup --verify <path>` | Verify decryptability and schema integrity of a backup file |
 | `vault backup --prune [n]` | Prune oldest backups exceeding retention count (default: 10) |
 | `vault snapshot --list` | List timestamped rolling snapshots created before writes |
@@ -186,11 +195,11 @@ vault totp GitHub
 
 | Command | Description |
 | --- | --- |
-| `vault export [--output <path>]` | Export encrypted archive (`.pvex`) |
+| `vault export [--output <path>]` | Export encrypted archive (`.pvex` or `.pvex.gz`) |
 | `vault export --format encrypted-json` | Export authenticated AES-256-GCM encrypted JSON envelope |
 | `vault export --format csv [--delimiter ,]` | Export vault entries to customizable CSV |
 | `vault export --format env` | Export credentials to local `.env` configuration file |
-| `vault import <file>` | Import from Bitwarden JSON or browser CSV |
+| `vault import <file>` | Import from KeePass 2.x XML, Bitwarden JSON, or browser CSV |
 | `vault import <file> --format encrypted-json` | Import authenticated encrypted JSON envelope |
 
 ### Automation and Process Injection
@@ -249,7 +258,7 @@ Vault files are stored in a dedicated local directory with restricted user-only 
 The repository includes a comprehensive automated test suite covering cryptographic derivation, AEAD encryption, tamper detection, CLI commands, importers, exporters, and UI rendering:
 
 ```powershell
-# Run full automated test suite (85 tests)
+# Run full automated test suite (98 tests)
 python -m pytest
 
 # Run linting and style validation

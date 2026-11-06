@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from vault.constants import ENV_NAME_RE, MAX_ENTRY_HISTORY, VAULT_SCHEMA_VERSION
@@ -221,3 +221,71 @@ def validate_vault_data(data: Any) -> Dict[str, Any]:
                 "attachments": {},
             }
     return validated
+
+
+def validate_vault_schema_detailed(data: Any) -> Tuple[bool, List[str]]:
+    """Perform detailed recursive schema validation on decrypted vault structure.
+
+    Returns a tuple of (is_valid, error_messages).
+    """
+    errors: List[str] = []
+    if not isinstance(data, dict):
+        return False, ["Decrypted vault data root must be a JSON object / dictionary."]
+
+    schema_version = data.get("schema_version", 1)
+    if not isinstance(schema_version, int) or schema_version < 1:
+        errors.append("Invalid or negative schema_version.")
+    elif schema_version > VAULT_SCHEMA_VERSION:
+        errors.append(f"Unsupported schema_version {schema_version} (maximum supported: {VAULT_SCHEMA_VERSION}).")
+
+    entries = data.get("entries", data)
+    if not isinstance(entries, dict):
+        errors.append("Vault entries container must be a dictionary.")
+        return False, errors
+
+    for name, entry in entries.items():
+        if not isinstance(name, str) or not name.strip():
+            errors.append(f"Invalid entry key: {name!r} (must be non-empty string).")
+            continue
+        if not isinstance(entry, dict):
+            if not isinstance(entry, str):
+                errors.append(f"Entry '{name}' must be an object or string, got {type(entry).__name__}.")
+            continue
+
+        etype = entry.get("type", "password")
+        if etype not in ("password", "api_key"):
+            errors.append(f"Entry '{name}' has unknown type: {etype!r}.")
+
+        sec_key = "api_key" if etype == "api_key" else "password"
+        if sec_key not in entry or not isinstance(entry[sec_key], str):
+            errors.append(f"Entry '{name}' missing required secret string field '{sec_key}'.")
+
+        for str_field in ("username", "url", "notes", "env", "created", "expires", "totp_secret", "totp"):
+            if str_field in entry and not isinstance(entry[str_field], str):
+                errors.append(f"Entry '{name}.{str_field}' must be a string.")
+
+        if entry.get("env") and not ENV_NAME_RE.fullmatch(entry["env"]):
+            errors.append(f"Entry '{name}.env' is not a valid environment variable name: {entry['env']!r}.")
+
+        for date_field in ("created", "expires"):
+            if entry.get(date_field) and parse_date(entry[date_field]) is None:
+                errors.append(f"Entry '{name}.{date_field}' is not a valid YYYY-MM-DD date: {entry[date_field]!r}.")
+
+        if "tags" in entry and not isinstance(entry["tags"], list):
+            errors.append(f"Entry '{name}.tags' must be a list.")
+        elif "tags" in entry and isinstance(entry["tags"], list):
+            for t in entry["tags"]:
+                if not isinstance(t, str):
+                    errors.append(f"Entry '{name}.tags' contains non-string item: {t!r}.")
+
+        if "history" in entry and not isinstance(entry["history"], list):
+            errors.append(f"Entry '{name}.history' must be a list.")
+
+        if "custom_fields" in entry and not isinstance(entry["custom_fields"], dict):
+            errors.append(f"Entry '{name}.custom_fields' must be a dictionary.")
+
+        if "attachments" in entry and not isinstance(entry["attachments"], dict):
+            errors.append(f"Entry '{name}.attachments' must be a dictionary.")
+
+    return len(errors) == 0, errors
+
